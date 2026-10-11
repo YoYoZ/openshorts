@@ -4,7 +4,7 @@ import {
   Clock, Scissors, Send, ExternalLink, FolderOpen, Lock,
 } from 'lucide-react';
 import { apiJson, openQuotaWall } from '../lib/api';
-import { track } from '../lib/analytics';
+import { track } from '../lib/events';
 
 // Autopilot: every new video on the user's connected YouTube channel is turned
 // into shorts automatically, and optionally the best ones are scheduled on

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Scan, Scissors, Activity, Radio, CheckCircle } from 'lucide-react';
+import { Scan, Scissors, Activity, Radio, CheckCircle, Pause, Play } from 'lucide-react';
 import { getApiUrl } from '../config';
 import { apiFetch } from '../lib/api';
 
@@ -8,6 +8,14 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
   const [isYouTube, setIsYouTube] = useState(false);
   const videoRef = useRef(null);
   const iframeRef = useRef(null);
+  const [paused, setPaused] = useState(false);
+
+  // The embed's mute=1 does not survive the playVideo/seekTo commands below in
+  // every browser, so mute explicitly with every command.
+  const ytCommand = (func, args = []) => {
+    const w = iframeRef.current?.contentWindow;
+    if (w) w.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+  };
 
   useEffect(() => {
     if (!media) return;
@@ -48,7 +56,10 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
   // Handle Sync Playback for Local Video
   useEffect(() => {
     if (!isYouTube && videoRef.current) {
-      if (isSyncedPlaying) {
+      videoRef.current.muted = true;
+      if (paused) {
+        videoRef.current.pause();
+      } else if (isSyncedPlaying) {
         // Sync Mode: Seek to time and Play. A non-finite time (a clip with no
         // start yet) would throw and take the whole tree down — skip the seek.
         if (Number.isFinite(syncedTime)) videoRef.current.currentTime = syncedTime;
@@ -65,22 +76,22 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
         }
       }
     }
-  }, [syncedTime, isSyncedPlaying, isYouTube, isComplete, syncTrigger]);
+  }, [syncedTime, isSyncedPlaying, isYouTube, isComplete, syncTrigger, paused]);
 
   // Handle Sync Playback for YouTube (Basic Iframe Control via PostMessage)
   useEffect(() => {
     if (isYouTube && iframeRef.current && videoSrc) {
-        const iframeWindow = iframeRef.current.contentWindow;
-        if (isSyncedPlaying) {
-             // Seek and Play
-             iframeWindow.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [syncedTime, true] }), '*');
-             iframeWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
+        ytCommand('mute');
+        if (paused) {
+             ytCommand('pauseVideo');
+        } else if (isSyncedPlaying) {
+             ytCommand('seekTo', [syncedTime, true]);
+             ytCommand('playVideo');
         } else {
-             // Pause
-             iframeWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }), '*');
+             ytCommand('pauseVideo');
         }
     }
-  }, [syncedTime, isSyncedPlaying, isYouTube, videoSrc, syncTrigger]);
+  }, [syncedTime, isSyncedPlaying, isYouTube, videoSrc, syncTrigger, paused]);
 
 
   const getYouTubeId = (url) => {
@@ -110,6 +121,7 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
             // Add enablejsapi=1 for postMessage control
             src={`https://www.youtube.com/embed/${videoSrc}?autoplay=1&mute=1&controls=0&loop=1&playlist=${videoSrc}&modestbranding=1&showinfo=0&rel=0&enablejsapi=1`}
             title="Processing Video"
+            onLoad={() => { ytCommand('mute'); if (paused) ytCommand('pauseVideo'); }}
             frameBorder="0"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           />
@@ -129,6 +141,24 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
           </div>
         )}
       </div>
+
+      {/* Pause/play: the preview autoplays, so give the viewer a way to stop it. */}
+      {videoSrc && (
+        <button
+          type="button"
+          onClick={() => {
+            const next = !paused;
+            setPaused(next);
+            if (isYouTube) { ytCommand('mute'); ytCommand(next ? 'pauseVideo' : 'playVideo'); }
+            else if (videoRef.current) { if (next) videoRef.current.pause(); else videoRef.current.play().catch(() => {}); }
+          }}
+          title={paused ? 'Play preview' : 'Pause preview'}
+          className="absolute bottom-2.5 right-2.5 sm:bottom-auto sm:top-14 sm:right-4 z-40 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/70 text-white/80 hover:text-white readout"
+        >
+          {paused ? <Play size={12} /> : <Pause size={12} />}
+          {paused ? 'play' : 'pause'}
+        </button>
+      )}
 
       {/* Overlays - Hide when synced playing so user sees clean video */}
       {!isSyncedPlaying && !isComplete && (

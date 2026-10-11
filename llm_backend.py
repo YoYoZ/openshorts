@@ -119,7 +119,10 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
     last_rejection: Optional[str] = None
     with _client() as client:
         for fmt in _response_formats(schema):
-            body = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
+            body = {"model": model, "messages": messages, "stream": False}
+            # Newer Claude models reject `temperature` on the OpenAI-compatible endpoint.
+            if "api.anthropic.com" not in url:
+                body["temperature"] = 0.2
             if fmt is not None:
                 body["response_format"] = fmt
             resp = client.post(url, json=body, headers=_headers())
@@ -151,15 +154,40 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
     validated = schema.model_validate(parsed).model_dump()
 
     usage = data.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    in_price, out_price = _prices(model)
+    input_cost = input_tokens * in_price / 1_000_000
+    output_cost = output_tokens * out_price / 1_000_000
     cost = {
-        "input_tokens": int(usage.get("prompt_tokens") or 0),
-        "output_tokens": int(usage.get("completion_tokens") or 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "thinking_tokens": 0,
-        "input_cost": 0.0,
-        "output_cost": 0.0,
-        "total_cost": 0.0,
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "total_cost": input_cost + output_cost,
         "model": model,
         "price_estimated": False,
-        "local": True,
+        "local": not (in_price or out_price),
     }
     return validated, cost
+
+
+# USD per million tokens (input, output) for hosted models reached through the
+# OpenAI-compatible endpoint. LLM_PRICE_INPUT / LLM_PRICE_OUTPUT override it;
+# an unknown model (a local Ollama one) costs nothing.
+_PRICES_PER_MTOK = {
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+
+
+def _prices(model: str) -> Tuple[float, float]:
+    default = _PRICES_PER_MTOK.get(model, (0.0, 0.0))
+    try:
+        return (float(os.environ.get("LLM_PRICE_INPUT") or default[0]),
+                float(os.environ.get("LLM_PRICE_OUTPUT") or default[1]))
+    except ValueError:
+        return default

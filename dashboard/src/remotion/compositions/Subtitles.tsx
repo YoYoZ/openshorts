@@ -69,6 +69,19 @@ interface SubtitleBlockProps {
   blockStartMs: number;
 }
 
+// Same rule as the burn (subtitles.fit_scale): a block whose widest word would
+// run past 92% of the frame is scaled down as a whole. Lines wrap on spaces,
+// so only a single word can overflow.
+const FIT_WIDTH_SHARE = 0.92;
+let measureCtx: CanvasRenderingContext2D | null = null;
+const measureWord = (text: string, fontStack: string, fontSize: number): number => {
+  if (typeof document === "undefined") return 0;
+  if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+  if (!measureCtx) return 0;
+  measureCtx.font = `700 ${fontSize}px ${fontStack}`;
+  return measureCtx.measureText(text).width;
+};
+
 const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
   block,
   config,
@@ -84,6 +97,18 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
 
   const positionStyle = POSITION_MAP[position] ?? POSITION_MAP.bottom;
   const fontStack = getFontStack(style.fontFamily);
+  const { width: frameWidth } = useVideoConfig();
+  const grow = style.animation === "pop" ? 1.08 : 1;
+  // Widest word of the WHOLE clip, like the burn: one size for every caption.
+  const widest = React.useMemo(() => Math.max(
+    0,
+    ...config.captions.map((w) =>
+      measureWord(style.uppercase ? w.text.toUpperCase() : w.text, fontStack, style.fontSize) * grow
+        + 2 * (style.borderWidth || 0))
+  ), [config.captions, style.uppercase, fontStack, style.fontSize, grow, style.borderWidth]);
+  const avail = frameWidth * FIT_WIDTH_SHARE;
+  const fit = widest > avail ? Math.max(0.35, avail / widest) : 1;
+  const fitted = fit < 1 ? { ...style, fontSize: style.fontSize * fit } : style;
 
   // Background box style
   const hasBg = style.bgOpacity > 0;
@@ -118,9 +143,9 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
           textAlign: "center",
           direction: block.words.some((w) => RTL_CHARS.test(w.text)) ? "rtl" : "ltr",
           fontFamily: fontStack,
-          fontSize: style.fontSize,
+          fontSize: fitted.fontSize,
           fontWeight: 700,
-          maxWidth: "85%",
+          maxWidth: "92%",
           ...bgStyle,
         }}
       >
@@ -131,7 +156,7 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
               word={word.text}
               isActive={i === activeIndex}
               hidden={!!style.reveal && activeIndex >= 0 && i > activeIndex}
-              style={style}
+              style={fitted}
               fontStack={fontStack}
               animation={style.animation}
               frame={frame}
@@ -244,7 +269,11 @@ const WordSpan: React.FC<WordSpanProps> = ({
   const dropShadow = style.shadow
     ? `${style.shadow * 3}px ${style.shadow * 3}px ${style.shadow * 2}px rgba(0,0,0,0.55)`
     : "";
-  const outline = strokeShadow === "none" ? "" : strokeShadow;
+  // The four offset shadows above are only a fallback: at thick borders they
+  // read as ghost copies of the word. A real stroke painted under the fill is
+  // what libass draws (Chromium supports paint-order on HTML text).
+  const useStroke = style.borderWidth > 0;
+  const outline = useStroke || strokeShadow === "none" ? "" : strokeShadow;
 
   return (
     <span
@@ -258,6 +287,10 @@ const WordSpan: React.FC<WordSpanProps> = ({
             .filter(Boolean)
             .join(", ") || "none",
         visibility: hidden ? "hidden" : "visible",
+        ...(useStroke ? {
+          WebkitTextStroke: `${style.borderWidth * 2}px ${style.borderColor}`,
+          paintOrder: "stroke fill",
+        } : {}),
         transform,
         display: "inline-block",
         transition: "none",

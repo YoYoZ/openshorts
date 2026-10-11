@@ -2,6 +2,7 @@ import os
 import re
 import textwrap
 import subprocess
+import render_ops
 import urllib.request
 import uuid
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -21,7 +22,7 @@ def _truncate_bytes(text, max_bytes):
     return encoded[:max_bytes].decode("utf-8", "ignore")
 
 FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSerif/NotoSerif-Bold.ttf"
-FONT_DIR = "fonts"
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 FONT_PATH = os.path.join(FONT_DIR, "NotoSerif-Bold.ttf")
 # Bundled (SIL OFL, see fonts/Montserrat-OFL.txt): the "pill" look's sans.
 PILL_FONT_PATH = os.path.join(FONT_DIR, "Montserrat-ExtraBold.ttf")
@@ -278,7 +279,10 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
     pills = bool(look.get("pills"))
     # A chosen typeface (HOOK_FONTS key) wins; otherwise the style's own
     # (pill -> Montserrat, the rest -> Noto Serif, as they always rendered).
-    default_font = "montserrat" if look.get("font") == PILL_FONT_PATH else "serif"
+    # Montserrat for every style unless another face is chosen: the serif
+    # default of the boxed styles looked like a rendering bug next to the
+    # sans everything else uses.
+    default_font = "montserrat"
     font_path, size_factor = HOOK_FONTS.get(font or default_font, HOOK_FONTS[default_font])
     base_font_size = int(target_width * size_factor)
     font_size = int(base_font_size * font_scale)
@@ -308,39 +312,49 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
     paragraphs = text.split('\n')
     lines = []
 
-    for p in paragraphs:
-        if not p.strip():
-            lines.append("")
-            continue
-
-        words = p.split()
-        current_line = []
-
+    def wrap(words, width):
+        out, current_line = [], []
         for word in words:
             # Test if adding word fits
             test_line = ' '.join(current_line + [word])
-            w = _measure_width(draw, test_line, font, emoji_font)
-
-            if w <= max_text_width:
+            if _measure_width(draw, test_line, font, emoji_font) <= width:
                 current_line.append(word)
                 continue
-
             # Word doesn't fit on the current line
             if current_line:
-                lines.append(' '.join(current_line))
+                out.append(' '.join(current_line))
                 current_line = []
-
-            if _measure_width(draw, word, font, emoji_font) <= max_text_width:
+            if _measure_width(draw, word, font, emoji_font) <= width:
                 current_line = [word]
             else:
                 # Single word wider than the box: hard-wrap it character-wise
                 # so it can't get cut off at the edges.
                 pieces = _break_long_word(draw, word, font, emoji_font, max_text_width)
-                lines.extend(pieces[:-1])
+                out.extend(pieces[:-1])
                 current_line = [pieces[-1]] if pieces else []
-
         if current_line:
-            lines.append(' '.join(current_line))
+            out.append(' '.join(current_line))
+        return out
+
+    for p in paragraphs:
+        if not p.strip():
+            lines.append("")
+            continue
+        words = p.split()
+        wrapped = wrap(words, max_text_width)
+        # Balance: the narrowest width that keeps the same number of lines,
+        # so a hook never ends on one orphaned word ("...просить / ключ").
+        if len(wrapped) > 1:
+            lo = max(_measure_width(draw, w, font, emoji_font) for w in words)
+            hi = max_text_width
+            while hi - lo > 4:
+                mid = (lo + hi) / 2
+                if len(wrap(words, mid)) <= len(wrapped):
+                    hi = mid
+                else:
+                    lo = mid
+            wrapped = wrap(words, hi)
+        lines.extend(wrapped)
 
     if pills:
         return _draw_pills(lines, font, emoji_font, font_size, box_fill, text_fill,
@@ -453,7 +467,9 @@ def _auto_place(video_path, text, target_box_width, hook_filename, font_scale, s
         w, h = dims[rel]
         return w / video_width, h / video_height
 
-    rel, y, cost = hook_placement.best_scale(measure, frames, bands)
+    # Only move the hook, never shrink it: the size is the user's choice, and
+    # a silently smaller box read as a broken size control.
+    rel, y, cost = hook_placement.best_scale(measure, frames, bands, scales=(1.0,))
     if y is None:
         print("   ℹ️ Hook placement: no spot clears the captions, keeping the top spot.")
         return None
@@ -566,7 +582,7 @@ def add_hook_to_video(video_path, text, output_path, position="top", font_scale=
                 output_path
             ]
         
-        subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
+        render_ops.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
         print(f"✅ Hook added to {output_path}")
         if placed:
             return {"position": "auto", "y": placed["y"], "scale": placed["scale"],

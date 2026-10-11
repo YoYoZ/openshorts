@@ -1,0 +1,75 @@
+name: Desktop app
+
+# Builds the AutoShortsCut desktop app (desktop/, Electron) for Windows,
+# Linux and macOS. Artifacts are attached to the run; pushing a tag
+# desktop-vX.Y.Z also attaches them to a GitHub release.
+#
+# The packages carry the backend source and the built dashboard. The first
+# launch creates a Python environment from a system Python 3.10-3.12 and
+# installs requirements.txt (see desktop/runtime.js), so the target machine
+# needs Python and ffmpeg on PATH.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+    branches: [autoshortscut]
+    paths:
+      - "desktop/**"
+      - "dashboard/**"
+      - "*.py"
+      - "requirements.txt"
+      - ".github/workflows/desktop.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+            artifact: desktop/dist/*.exe
+          - os: ubuntu-latest
+            target: --linux
+            artifact: desktop/dist/*.AppImage
+          - os: macos-latest
+            target: --mac
+            artifact: desktop/dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the dashboard
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the desktop app
+        working-directory: desktop
+        env:
+          # No signing certificates: unsigned builds.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm ci
+          npx electron-builder ${{ matrix.target }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autoshortscut-${{ runner.os }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}

@@ -143,7 +143,17 @@ class _TranscribeProgress:
     def update(self, position_seconds):
         if self.total <= 0:
             return
-        pct = min(int(position_seconds / self.total * 100), 100)
+        exact = min(position_seconds / self.total * 100, 100.0)
+        try:
+            import progress_events
+            elapsed = time.time() - self.started
+            eta = elapsed * (100 - exact) / exact if exact > 0.5 else None
+            progress_events.emit("transcribe", exact,
+                                 detail=f"{int(position_seconds)}s of {int(self.total)}s audio",
+                                 eta=round(eta) if eta else None)
+        except Exception:
+            pass
+        pct = min(int(exact), 100)
         while pct >= self.next_pct and self.next_pct <= 100:
             elapsed = int(time.time() - self.started)
             print(f"🎙️ Transcribing… {self.next_pct}% ({elapsed}s)", flush=True)
@@ -660,6 +670,22 @@ def transcribe_media(media_path):
 
     backend = os.environ.get("TRANSCRIBE_BACKEND", "whisper").strip().lower()
 
+    # Groq (hosted whisper-large-v3): "groq" uses it only, "auto" tries it
+    # first and falls back to the local model on any failure.
+    if backend in ("groq", "auto") and os.environ.get("GROQ_API_KEY", "").strip():
+        try:
+            transcript = _transcribe_with_groq(media_path)
+            print(f"🎙️ [ASR] groq ok: lang={transcript['language']} "
+                  f"segments={len(transcript['segments'])}")
+            return transcript
+        except Exception as e:
+            if backend == "groq":
+                raise
+            print(f"⚠️ [ASR] groq failed ({type(e).__name__}: {str(e)[:200]}) — "
+                  f"falling back to local whisper")
+    elif backend == "groq":
+        raise RuntimeError("TRANSCRIBE_BACKEND=groq but GROQ_API_KEY is not set")
+
     if backend == "parakeet":
         try:
             transcript = _transcribe_with_parakeet(media_path)
@@ -675,3 +701,111 @@ def transcribe_media(media_path):
                   f"falling back to whisper")
 
     return _transcribe_with_whisper(media_path)
+
+
+# --- groq (hosted whisper) ---------------------------------------------------
+
+GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
+# Groq's free tier takes files up to 25 MB; mono 16 kHz MP3 at 32 kb/s is
+# ~14 MB per hour, so chunks of 40 min stay well under it.
+GROQ_CHUNK_SECONDS = 40 * 60
+
+
+def _media_duration(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                          "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _groq_request(audio_path, offset, emit):
+    import httpx
+    key = os.environ["GROQ_API_KEY"].strip()
+    with open(audio_path, "rb") as f:
+        files = {"file": (os.path.basename(audio_path), f, "audio/mpeg")}
+        data = {"model": GROQ_MODEL, "response_format": "verbose_json",
+                "temperature": "0", "timestamp_granularities[]": ["word", "segment"]}
+        resp = httpx.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
+                          data=data, files=files, timeout=600)
+    if resp.status_code != 200:
+        raise RuntimeError(f"groq HTTP {resp.status_code}: {resp.text[:300]}")
+    body = resp.json()
+    _groq_request.language = body.get("language")
+    words = [{"word": " " + str(w.get("word", "")).strip(),
+              "start": float(w["start"]) + offset, "end": float(w["end"]) + offset}
+             for w in body.get("words") or [] if str(w.get("word", "")).strip()]
+    segments = [{"start": float(sg["start"]) + offset, "end": float(sg["end"]) + offset,
+                 "text": sg.get("text", "")} for sg in body.get("segments") or []]
+    return segments, words
+
+
+# Whisper reports the language it heard as an English name ("ukrainian").
+_LANGUAGE_NAMES = {
+    "english": "en", "ukrainian": "uk", "russian": "ru", "polish": "pl", "german": "de",
+    "french": "fr", "spanish": "es", "italian": "it", "portuguese": "pt", "dutch": "nl",
+    "czech": "cs", "slovak": "sk", "belarusian": "be", "bulgarian": "bg", "romanian": "ro",
+    "hungarian": "hu", "turkish": "tr", "greek": "el", "swedish": "sv", "norwegian": "no",
+    "danish": "da", "finnish": "fi", "lithuanian": "lt", "latvian": "lv", "estonian": "et",
+    "serbian": "sr", "croatian": "hr", "slovenian": "sl", "georgian": "ka", "armenian": "hy",
+    "kazakh": "kk", "arabic": "ar", "hebrew": "he", "hindi": "hi", "japanese": "ja",
+    "korean": "ko", "chinese": "zh", "vietnamese": "vi", "indonesian": "id", "thai": "th",
+}
+
+
+def _groq_language(reported, text):
+    """ISO code for the language whisper heard, else classify the text."""
+    value = str(reported or "").strip().lower()
+    if len(value) == 2:
+        return value
+    return _LANGUAGE_NAMES.get(value) or _detect_language(text)
+
+
+def _transcribe_with_groq(media_path):
+    """Transcribe on Groq's hosted whisper, in the local backend's shape:
+    {text, language, segments: [{start, end, text, words: [{word, start, end}]}]}."""
+    import progress_events
+    total = _media_duration(media_path)
+    tmpdir = tempfile.mkdtemp(prefix="groq_")
+    try:
+        chunk = GROQ_CHUNK_SECONDS
+        starts = [0.0] if total <= chunk else [i * chunk for i in range(int(total // chunk) + 1)]
+        all_segments, all_words = [], []
+        started = time.time()
+        for n, start in enumerate(starts, 1):
+            audio = os.path.join(tmpdir, f"chunk{n}.mp3")
+            cmd = ["ffmpeg", "-v", "error", "-y", "-ss", str(start), "-i", media_path]
+            if len(starts) > 1:
+                cmd += ["-t", str(chunk)]
+            cmd += ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k", audio]
+            subprocess.run(cmd, check=True, capture_output=True)
+            progress_events.emit("transcribe", (n - 1) / len(starts) * 100 + 5, force=True,
+                                 detail=f"groq: part {n} of {len(starts)}" if len(starts) > 1
+                                 else "groq: transcribing")
+            segs, words = _groq_request(audio, start, progress_events.emit)
+            all_segments.extend(segs)
+            all_words.extend(words)
+        # Groq's word order is the spoken order; its timestamps are not always
+        # monotonic. Fix the times IN that order (never sort: a mis-stamped
+        # word would jump sentences), then hand each word to the segment it
+        # now starts in.
+        from subtitles import fix_word_overlaps
+        all_words = fix_word_overlaps(all_words)
+        wi = 0
+        for i, seg in enumerate(all_segments):
+            end = all_segments[i + 1]["start"] if i + 1 < len(all_segments) else float("inf")
+            seg_words = []
+            while wi < len(all_words) and all_words[wi]["start"] < end:
+                seg_words.append(all_words[wi])
+                wi += 1
+            seg["words"] = merge_continuation_words(seg_words)
+        text = " ".join(sg["text"].strip() for sg in all_segments if sg["text"].strip())
+        print(f"🎙️ [ASR] groq transcribed {total:.0f}s of audio in "
+              f"{time.time() - started:.1f}s")
+        return {"text": text, "language": _groq_language(getattr(_groq_request, "language", None), text),
+                "segments": all_segments}
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)

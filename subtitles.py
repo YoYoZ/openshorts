@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import render_ops
 import sys
 
 from ffmpeg_utils import (video_encode_args, escape_filter_value, QUALITY,
@@ -148,6 +149,31 @@ def generate_srt_from_video(video_path, output_path, max_chars=20, max_duration=
     return generate_srt(transcript, 0, duration, output_path, max_chars, max_duration)
 
 
+def fix_word_overlaps(words, start="start", end="end", min_dur=0.04):
+    """Copies of ``words`` in their SPOKEN order (never re-sorted) with times
+    made monotonic: no word runs past the next one's start, and a word whose
+    start jumps back before the previous word starts where that one ends.
+
+    Whisper (local and Groq) sometimes stretches a word across its neighbours
+    (" пізніше." 881.97-882.85 over " Давайте" 882.37-882.81) or stamps one far
+    too early (" проблема." 0.40 after " одна" 0.58). Sorting by time turned
+    the latter into "ще проблема. одна"; fixing the times keeps the sentence.
+    """
+    out = [dict(w) for w in words]
+    for a, b in zip(out, out[1:]):
+        a_s, a_e = float(a[start]), float(a[end])
+        b_s, b_e = float(b[start]), float(b[end])
+        if b_s >= a_e:
+            continue
+        if b_s >= a_s + min_dur:
+            a[end] = b_s                      # trim the word that overran
+        else:
+            b[start] = b_s = max(a_e, a_s + min_dur)   # glitched early stamp
+        if b_e < b_s + min_dur:
+            b[end] = b_s + min_dur
+    return out
+
+
 def _collect_word_blocks(transcript, clip_start, clip_end, max_chars=20, max_duration=2.0):
     """
     Flatten transcript words for a clip range and group them into short blocks
@@ -161,11 +187,14 @@ def _collect_word_blocks(transcript, clip_start, clip_end, max_chars=20, max_dur
     flat_words = []
     for segment in transcript.get('segments', []):
         flat_words.extend(segment.get('words', []))
-    flat_words = merge_continuation_words(flat_words)
+    flat_words = fix_word_overlaps(merge_continuation_words(flat_words))
 
     words = []
     for word_info in flat_words:
-        if word_info.get('end', 0) > clip_start and word_info.get('start', 0) < clip_end:
+        # Midpoint inside the clip (see app.get_clip_transcript): a word the
+        # cut sliced off no longer opens the first caption.
+        mid = (word_info.get('start', 0) + word_info.get('end', 0)) / 2
+        if clip_start <= mid < clip_end:
             cleaned_word = _normalize_subtitle_word(word_info.get('word', ''))
             if not cleaned_word:
                 continue
@@ -297,6 +326,143 @@ def line_budget(font_name, font_size):
     return max(6, round(_LINE_CHARS.get(font_name, 14) * 44 / size))
 
 
+# ---- caption fit ----------------------------------------------------------
+# libass scales a font so usWinAscent + usWinDescent spans the style's
+# Fontsize (in PlayResY units), so a run of text is exactly
+#   sum(advance widths) / (winAscent + winDescent) * Fontsize   PlayRes units.
+# That matches burned frames within ~1%, which is what lets a long word be
+# shrunk before it runs off the frame instead of after.
+_FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_BUNDLED_FONTS = {"anton": "Anton-Regular.ttf",
+                  "montserrat extrabold": "Montserrat-ExtraBold.ttf"}
+# Fallback metrics when a font or a glyph cannot be found: Verdana Bold is
+# among the widest common sans faces, so the estimate errs on shrinking.
+_FALLBACK_FONT_FILES = ("verdanab.ttf", "DejaVuSans-Bold.ttf")
+# Most of the frame width a caption line may take; the rest is breathing
+# room for the outline and the pop effect's 108% scale.
+FIT_WIDTH_SHARE = 0.92
+_metrics_cache = {}
+
+
+def _find_font_file(font_name):
+    """Path of a font file for ``font_name`` (bold face preferred), or None."""
+    key = str(font_name or "").strip().lower()
+    if key in _BUNDLED_FONTS:
+        path = os.path.join(_FONTS_DIR, _BUNDLED_FONTS[key])
+        if os.path.exists(path):
+            return path
+    try:
+        import logging
+        from matplotlib import font_manager
+        # "Failed to find font weight bold" is expected for single-weight
+        # faces like Impact; the regular file is the right one then.
+        logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+        props = font_manager.FontProperties(family=font_name, weight="bold")
+        return font_manager.findfont(props, fallback_to_default=False)
+    except Exception:
+        return None
+
+
+def _font_metrics(path):
+    """(cmap, advance widths, winAscent + winDescent) for a font file."""
+    if path in _metrics_cache:
+        return _metrics_cache[path]
+    metrics = None
+    try:
+        from fontTools.ttLib import TTFont
+        font = TTFont(path, lazy=True, fontNumber=0)
+        os2 = font["OS/2"]
+        height = (os2.usWinAscent + os2.usWinDescent) or font["head"].unitsPerEm
+        metrics = (font.getBestCmap() or {}, font["hmtx"].metrics, height)
+    except Exception:
+        metrics = None
+    _metrics_cache[path] = metrics
+    return metrics
+
+
+def _fallback_metrics():
+    candidates = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", f)
+                  for f in _FALLBACK_FONT_FILES]
+    try:
+        from matplotlib import font_manager
+        candidates.append(font_manager.findfont(
+            font_manager.FontProperties(family="DejaVu Sans", weight="bold")))
+    except Exception:
+        pass
+    for path in candidates:
+        if path and os.path.exists(path):
+            m = _font_metrics(path)
+            if m:
+                return m
+    return None
+
+
+def font_covers(font_name, text):
+    """True when ``font_name`` has a glyph for every visible char of ``text``
+    (unknown fonts count as covering: nothing better to switch to)."""
+    path = _find_font_file(font_name)
+    m = _font_metrics(path) if path else None
+    if not m:
+        return True
+    cmap = m[0]
+    return all(ord(c) in cmap for c in text if not c.isspace())
+
+
+def text_width_units(text, font_name, fontsize):
+    """Width of ``text`` in PlayRes units at ``fontsize`` (libass sizing)."""
+    path = _find_font_file(font_name)
+    primary = _font_metrics(path) if path else None
+    fallback = _fallback_metrics()
+    width = 0.0
+    for ch in text:
+        for m in (primary, fallback):
+            if not m:
+                continue
+            cmap, hmtx, height = m
+            glyph = cmap.get(ord(ch))
+            if glyph is not None and glyph in hmtx:
+                width += hmtx[glyph][0] / height * fontsize
+                break
+        else:
+            width += 0.6 * fontsize   # no metrics at all: a typical bold glyph
+    return width
+
+
+def fit_scale(words, font_name, fontsize, frame_aspect, uppercase=False,
+              grow=1.0, outline=0.0):
+    """Percent (<=100) to scale a caption block by so its widest word fits.
+
+    Lines wrap on spaces, so only a single word can be wider than the frame.
+    frame_aspect is width / height of the video (9/16 for a short); grow is
+    how far an animation enlarges the active word (1.08 for pop) and outline
+    the border width, both in PlayRes units.
+    """
+    avail = 288 * float(frame_aspect or 9 / 16) * FIT_WIDTH_SHARE
+    widest = 0.0
+    for w in words:
+        text = w.upper() if uppercase else w
+        width = text_width_units(text, font_name, fontsize) * grow + 2 * outline
+        widest = max(widest, width)
+    if widest <= avail:
+        return 100
+    return max(35, int(avail / widest * 100))
+
+
+def frame_aspect_of(video_path, default=9 / 16):
+    """width / height of a video file, or ``default`` when it can't be read."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        try:
+            w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        finally:
+            cap.release()
+        return (w / h) if w and h else default
+    except Exception:
+        return default
+
+
 def _ass_time(seconds):
     """Format seconds as ASS timestamp H:MM:SS.cc (centiseconds)."""
     seconds = max(0, seconds)
@@ -351,7 +517,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
                  highlight_color="#FFD700", bg_color="#000000", bg_opacity=0.0,
                  effect="none", base_opacity=1.0, uppercase=False,
                  margin_v=SAFE_MARGIN_V, split_ranges=None,
-                 reveal=False, shadow=0):
+                 reveal=False, shadow=0, frame_aspect=None):
     """
     Generates a karaoke-style ASS file: each block is shown like the SRT path,
     but the currently spoken word is rendered in highlight_color (modern
@@ -397,7 +563,15 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         return "{\\an5}" if any(a <= t < b for a, b in seam_ranges) else ""
 
     safe_font = _sanitize_font_name(font_name)
-    base_opacity = _clamp_number(base_opacity, 0.05, 1.0, 1.0)
+    # Anton has no Cyrillic (or Greek, ...): libass then silently draws those
+    # words in some wide system face while every size budget assumes a
+    # condensed one. Impact is the closest condensed face with that coverage,
+    # and it is what the preview's CSS stack falls back to as well.
+    if safe_font.lower() == "anton":
+        all_text = "".join(w['word'] for b in blocks for w in b)
+        if not font_covers("Anton", all_text) and font_covers("Impact", all_text):
+            safe_font = "Impact"
+    base_opacity =_clamp_number(base_opacity, 0.05, 1.0, 1.0)
     # Dim inactive words via a fully-opaque scaled color (NOT alpha — see
     # _dim_hex_color); the active word overrides the color inline.
     primary_colour = hex_to_ass_color(_dim_hex_color(font_color, base_opacity), 1.0)
@@ -439,8 +613,8 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
     elif effect == "pop":
         # Gentle pop. The old 75->112 range started the word so small that any
         # frame caught mid-animation read as a sizing bug rather than a beat.
-        active_prefix = (f"{{\\c{highlight_inline}"
-                         f"\\fscx90\\fscy90\\t(0,110,\\fscx108\\fscy108)}}")
+        # Built per block below, relative to that block's fit scale.
+        active_prefix = None
     else:
         active_prefix = f"{{\\c{highlight_inline}}}"
 
@@ -478,8 +652,25 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
+    # One scale for the whole clip, from its widest word: shrinking caption by
+    # caption made the text size jump between shots. {\r} resets to the
+    # style, so every reset re-applies the scale.
+    pct = fit_scale([w['word'].strip() for b in blocks for w in b], safe_font,
+                    final_fontsize, frame_aspect, uppercase,
+                    grow=1.08 if effect == "pop" else 1.0,
+                    outline=outline_width)
+    fit = f"\\fscx{pct}\\fscy{pct}" if pct < 100 else ""
     events = []
     for block in blocks:
+        reset = f"{{\\r{fit}}}"
+        if active_prefix is None:   # pop: 90% -> 108% of the block's scale
+            lo, hi = round(pct * 0.90), round(pct * 1.08)
+            prefix = (f"{{\\c{highlight_inline}"
+                      f"\\fscx{lo}\\fscy{lo}\\t(0,110,\\fscx{hi}\\fscy{hi})}}")
+        elif active_prefix == "{\\rActive}":
+            prefix = f"{{\\rActive{fit}}}"
+        else:
+            prefix = active_prefix
         for i, word in enumerate(block):
             # Event runs until the next word starts (no flicker in gaps);
             # the last word holds until the block ends.
@@ -494,15 +685,15 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
                 if uppercase:
                     text = text.upper()
                 if j == i:
-                    parts.append(f"{active_prefix}{text}{{\\r}}")
+                    parts.append(f"{prefix}{text}{reset}")
                 elif reveal and j > i:
-                    parts.append(f"{{\\alpha&HFF&}}{text}{{\\r}}")
+                    parts.append(f"{{\\alpha&HFF&}}{text}{reset}")
                 else:
                     parts.append(text)
 
             events.append(
                 f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
-                f"{seam_prefix(ev_start)}{' '.join(parts)}"
+                f"{seam_prefix(ev_start)}{'{' + fit + '}' if fit else ''}{' '.join(parts)}"
             )
 
     if not events:
@@ -674,7 +865,7 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
     ]
 
     _log(f"🎬 Burning subtitles: {' '.join(cmd)}")
-    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    result = render_ops.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     if result.returncode != 0:
         stderr_text = result.stderr.decode(errors='replace')

@@ -922,7 +922,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
 
     def _base_opts(extractor_args, proxy, cookies=True):
         return {
-            'quiet': False, 'verbose': True, 'no_warnings': False,
+            'quiet': True, 'verbose': False, 'no_warnings': False, 'noprogress': True,
             'cookiefile': cookies_path if (cookies and cookies_path) else None,
             'proxy': proxy, 'socket_timeout': 30, 'retries': 10, 'fragment_retries': 10,
             'nocheckcertificate': True, 'cachedir': False,
@@ -949,6 +949,17 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             # Bytes of a fragment still in flight: a failed attempt has
             # already paid for these even though 'finished' never fires.
             _dl_bytes["partial"] = int(d.get('downloaded_bytes') or 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate')
+            if total:
+                import progress_events
+                is_audio = str(d.get('filename', '')).endswith(('.m4a', '.webm', '.opus'))
+                speed = d.get('speed')
+                progress_events.emit(
+                    "download", _dl_bytes["partial"] / total * 100,
+                    detail=(f"{'audio' if is_audio else 'video'} "
+                            f"{_dl_bytes['partial'] / 1048576:.0f} / {total / 1048576:.0f} MB"
+                            + (f" at {speed / 1048576:.1f} MB/s" if speed else "")),
+                    eta=d.get('eta'))
         elif d.get('status') == 'finished':
             _dl_bytes["partial"] = 0
             _dl_bytes["total"] += int(d.get('total_bytes')
@@ -1160,6 +1171,8 @@ Technical Details: {str(last_err)}
         # monthly proxy-bandwidth counter. Not shown to clients (log filter).
         print(f"PROXY_BYTES={paid_bytes}")
     print(f"✅ Video downloaded in {time.time() - step_start_time:.2f}s: {downloaded_file}")
+    import progress_events
+    progress_events.emit("download", 100, detail="done", force=True)
     return downloaded_file, sanitized_title
 
 def finalize_clip_passthrough(input_video, final_output_video):
@@ -1253,7 +1266,8 @@ def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=
                 font_name=style["font_name"], font_color=style["font_color"],
                 border_color=style["border_color"], border_width=style["border_width"],
                 highlight_color=style["highlight_color"], effect=style["effect"],
-                base_opacity=style["base_opacity"], uppercase=style["uppercase"]):
+                base_opacity=style["base_opacity"], uppercase=style["uppercase"],
+                frame_aspect=_subs.frame_aspect_of(clip_path)):
             print("   ℹ️ No words in range — clip ships without captions.")
             return None
 
@@ -1302,6 +1316,15 @@ def auto_hook_clip(clip_path, clip, captions=None):
         seconds = float(os.environ.get("AUTO_HOOK_SECONDS", "5"))
     except ValueError:
         seconds = 5.0
+    # Saved "apply to all" defaults (app.child_env): typeface, size, spot.
+    hook_font = os.environ.get("AUTO_HOOK_FONT") or None
+    try:
+        hook_scale = max(0.4, min(2.5, float(os.environ.get("AUTO_HOOK_SCALE", "1"))))
+    except ValueError:
+        hook_scale = 1.0
+    hook_position = os.environ.get("AUTO_HOOK_POSITION", "auto")
+    if hook_position not in ("auto", "top", "center", "bottom"):
+        hook_position = "auto"
     try:
         from hooks import add_hook_to_video, HOOK_STYLES
         if style not in HOOK_STYLES:
@@ -1311,10 +1334,16 @@ def auto_hook_clip(clip_path, clip, captions=None):
             output_dir, f"hooked_{int(time.time())}_{os.path.basename(clip_path)}")
         # "auto": off the speaker's face and off the captions (hook_placement);
         # the layout ranges say where the captions sit (the seam on SPLIT).
-        config = {"text": text, "style": style, "position": "auto",
+        config = {"text": text, "style": style, "position": hook_position,
                   "duration_seconds": seconds}
-        place = {"position": "auto", "layout_ranges": clip.get('layout_ranges'),
-                 "has_captions": bool(captions)}
+        if hook_font:
+            config["font"] = hook_font
+        if hook_scale != 1.0:
+            config["scale"] = hook_scale
+        place = {"position": hook_position, "layout_ranges": clip.get('layout_ranges'),
+                 "has_captions": bool(captions), "font_scale": hook_scale}
+        if hook_font:
+            place["font"] = hook_font
 
         def note(result):
             if isinstance(result, dict) and result.get("y") is not None:
@@ -1839,6 +1868,13 @@ def transcribe_video(video_path):
     with host_asr_slot():
         try:
             transcript = transcribe_media(video_path)
+            # Store clean word timings: no word running over the next one.
+            from subtitles import fix_word_overlaps
+            for _seg in transcript.get('segments', []):
+                if _seg.get('words'):
+                    _seg['words'] = fix_word_overlaps(_seg['words'])
+            import progress_events
+            progress_events.emit("transcribe", 100, detail="done", force=True)
         finally:
             try:
                 release_models()
@@ -2013,10 +2049,22 @@ def get_viral_clips(transcript_result, video_duration):
                 video_duration=video_duration, language=language,
                 windows_json=json.dumps(_payload(ws), ensure_ascii=False))
 
-        for batch in score_batches(windows, SCORE_BATCH):
+        import progress_events
+        batches = list(score_batches(windows, SCORE_BATCH))
+        steps = len(batches) + 1   # every scoring batch, then the detail pass
+
+        def _sel_progress(done, label):
+            spent = sum(c.get("total_cost", 0) for c in costs)
+            progress_events.emit("select", done / steps * 100, force=True,
+                                 detail=f"{label} · ${spent:.3f} so far",
+                                 done=done, total=steps)
+
+        _sel_progress(0, f"scoring {len(windows)} windows in {len(batches)} batch(es)")
+        for n, batch in enumerate(batches, 1):
             scored.extend(_run_stage_split(
                 client, model_name, batch, _score_prompt,
                 gemini_worker.ScoreResponse, "windows", costs, "score"))
+            _sel_progress(n, f"scored batch {n} of {len(batches)}")
 
         # Shortlist the top windows; scale with duration so long videos surface
         # more candidates without exploding the detail call.
@@ -2041,9 +2089,11 @@ def get_viral_clips(transcript_result, video_duration):
                     windows_json=json.dumps(_payload(ws), ensure_ascii=False))
             return build
 
+        _sel_progress(len(batches), f"picking clips from {len(shortlist)} best windows")
         shorts = _run_stage_split(client, model_name, shortlist,
                                   _detail_prompt_for(min_clips, max_clips),
                                   gemini_worker.DetailResponse, "shorts", costs, "detail")
+        _sel_progress(steps, f"{len(shorts)} clip(s) picked")
 
         # The floor lived only in the prompt, and a prompt is not a contract:
         # the model regularly returned half of it and the job shipped that.
@@ -2097,9 +2147,13 @@ def get_viral_clips(transcript_result, video_duration):
                 "input_tokens": sum(c.get("input_tokens", 0) for c in costs),
                 "output_tokens": sum(c.get("output_tokens", 0) for c in costs),
                 "total_cost": sum(c.get("total_cost", 0) for c in costs),
-                "model": model_name,
+                # The model that actually ran (Claude via LLM_BASE_URL), not
+                # the Gemini default the variable above is named after.
+                "model": costs[0].get("model") or model_name,
             }
-            print(f"\U0001f4b0 Total cost ({model_name}, 2-pass, {len(costs)} calls): ${cost_analysis['total_cost']:.6f}")
+            print(f"\U0001f4b0 Total cost ({cost_analysis['model']}, 2-pass, {len(costs)} calls): "
+                  f"${cost_analysis['total_cost']:.4f} "
+                  f"({cost_analysis['input_tokens']} in / {cost_analysis['output_tokens']} out tokens)")
 
         if not shorts:
             print("⚠️ 2-pass returned no clips.")
@@ -2476,6 +2530,10 @@ if __name__ == '__main__':
                 "Clip detection failed — the AI model did not return usable clips for this video.")
         else:
             print(f"🔥 Found {len(clips_data['shorts'])} clips!")
+            import progress_events
+            _render_total = len(clips_data['shorts'])
+            progress_events.emit("render", 0, detail=f"0 of {_render_total} clips",
+                                 force=True, done=0, total=_render_total)
 
             # Save metadata. Silent videos have no transcript → no subtitles,
             # which is correct (there's no speech to caption).
@@ -2485,6 +2543,9 @@ if __name__ == '__main__':
             # basename is enough — the file sits in the job dir (URL jobs with
             # --keep-original) or in uploads/ (upload jobs).
             clips_data['source_video'] = os.path.basename(input_video)
+            if args.url:
+                # Lets a Short's description link back to the full video.
+                clips_data['source_url'] = args.url
             clips_data['output_format'] = output_format
             if source_subtitle_band:
                 clips_data['source_subtitle_band'] = source_subtitle_band
@@ -2554,6 +2615,8 @@ if __name__ == '__main__':
                         if os.environ.get("WATERMARK") == "1":
                             served = mark_delivery(served)
                         print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
+                        progress_events.tick("render", _render_total,
+                                             detail=f"clip {i+1} ready")
                         # Hand the API the file to actually serve for this clip.
                         # Without it the status poller guesses the clean reframe
                         # name, so a job in flight showed every clip stripped of

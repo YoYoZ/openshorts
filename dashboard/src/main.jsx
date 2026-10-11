@@ -9,7 +9,6 @@ import AccountPage from './components/AccountPage'
 import LoginModal from './components/LoginModal'
 import { readPendingPlan } from './lib/pendingPlan'
 import { applyConsent } from './lib/consent'
-import CookieBanner from './components/CookieBanner'
 
 const App = lazy(() => import('./App.jsx'))
 const Legal = lazy(() => import('./Legal.jsx'))
@@ -133,7 +132,6 @@ createRoot(document.getElementById('root')).render(
       <Suspense fallback={<div className="min-h-screen bg-paper flex items-center justify-center text-muted text-sm lowercase">loading…</div>}>
         <Root />
       </Suspense>
-      <CookieBanner />
     </AuthProvider>
   </StrictMode>,
 )

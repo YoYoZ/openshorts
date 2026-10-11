@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { alignEditedWords } from '../lib/alignWords';
 import RemotionPreview from './RemotionPreview';
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
@@ -58,6 +59,11 @@ const SIZE_OPTIONS = [
     { value: 56, label: 'L' },
     { value: 70, label: 'XL' },
 ];
+
+// Slider value = text height as % of the frame height. font_size is in the
+// units /api/subtitle takes: burned at font_size * 0.85 on a 288-high canvas.
+const sizeToPercent = (fontSize) => Math.round((fontSize * 0.85 / 288) * 100 * 2) / 2;
+const percentToSize = (pct) => Math.round((pct / 100) * 288 / 0.85 * 10) / 10;
 
 // Characters per line at size M, per font: Anton is condensed, Montserrat
 // wide. Bigger text gets proportionally fewer, so a line still fits the 9:16
@@ -162,6 +168,29 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
         setAnimationState(p.style === 'karaoke' ? (EFFECT_TO_ANIMATION[p.effect] || 'none') : 'none');
     };
 
+    // Reopen on the look last applied to this clip (caption_style in the
+    // job metadata, field names as /api/subtitle takes them).
+    const restoreStyle = (s) => {
+        setActivePreset(null);
+        if (s.position) setPosition(s.position);
+        if (s.font_size) setFontSize(s.font_size);
+        if (s.font_name) setFontName(s.font_name);
+        if (s.font_color) setFontColor(s.font_color);
+        if (s.highlight_color) setHighlightColor(s.highlight_color);
+        if (s.border_color) setBorderColor(s.border_color);
+        if (s.border_width != null) setBorderWidth(s.border_width);
+        if (s.bg_color) setBgColor(s.bg_color);
+        if (s.bg_opacity != null) setBgOpacity(s.bg_opacity);
+        if (s.style) setStyle(s.style);
+        if (s.effect) setEffect(s.effect);
+        if (s.base_opacity != null) setBaseOpacity(s.base_opacity);
+        if (s.uppercase != null) setUppercase(!!s.uppercase);
+        if (s.reveal != null) setReveal(!!s.reveal);
+        if (s.shadow != null) setShadow(s.shadow);
+        setOneWord(s.max_chars === 1);
+        setAnimationState(s.style === 'karaoke' ? (EFFECT_TO_ANIMATION[s.effect] || 'none') : 'none');
+    };
+
     const maxChars = lineBudget(fontName, fontSize, oneWord);
     // Same block duration as the auto captions (AUTO_CAPTION_STYLE).
     const maxDuration = 1.4;
@@ -174,18 +203,45 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
     const [captionsLoading, setCaptionsLoading] = useState(false);
     const [useRemotionPreview, setUseRemotionPreview] = useState(false);
 
+    // Unapplied edits (text and look) survive closing the editor: they are
+    // kept per clip in localStorage and win over the server copy on reopen.
+    const draftKey = `subtitle-draft:${jobId}:${clipIndex}`;
+    const hydrated = useRef(false);
+    const currentStyle = () => ({
+        position, font_size: fontSize, font_name: fontName, font_color: fontColor,
+        highlight_color: highlightColor, border_color: borderColor, border_width: borderWidth,
+        bg_color: bgColor, bg_opacity: bgOpacity, style, effect, base_opacity: baseOpacity,
+        uppercase, reveal, shadow, max_chars: oneWord ? 1 : null,
+    });
+    const clearDraft = () => { try { localStorage.removeItem(draftKey); } catch { /* storage off */ } };
+
     // Fetch word-level captions when modal opens
     useEffect(() => {
-        if (!isOpen || !jobId || clipIndex === undefined) return;
+        if (!isOpen || !jobId || clipIndex === undefined) { hydrated.current = false; return; }
+        hydrated.current = false;
 
         setCaptionsLoading(true);
         apiFetch(`/api/clip/${jobId}/${clipIndex}/transcript`)
             .then((res) => res.ok ? res.json() : null)
             .then((data) => {
                 if (data && data.captions && data.captions.length > 0) {
-                    setCaptions(data.captions);
+                    // Edited words last applied to this clip win; alignment of
+                    // further edits still runs against the transcript timings.
+                    const shown = data.editedCaptions || data.captions;
+                    setCaptions(shown);
                     setOriginalCaptions(data.captions);
-                    setEditableText(data.captions.map(c => c.text).join(' '));
+                    setEditableText(shown.map(c => c.text).join(' '));
+                    if (data.captionStyle) restoreStyle(data.captionStyle);
+                    let draft = null;
+                    try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch { draft = null; }
+                    // v2: drafts saved before word timings were repaired carry
+                    // out-of-order / overlapping times; let them go.
+                    if (draft && draft.v === 2) {
+                        if (draft.captions?.length) setCaptions(draft.captions);
+                        if (typeof draft.text === 'string') setEditableText(draft.text);
+                        if (draft.style) restoreStyle(draft.style);
+                    }
+                    hydrated.current = true;
                     setDurationSec(data.durationSec || 30);
                     setUseRemotionPreview(true);
                 } else {
@@ -194,28 +250,25 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
             })
             .catch(() => setUseRemotionPreview(false))
             .finally(() => setCaptionsLoading(false));
-    }, [isOpen, jobId, clipIndex]);
+    }, [isOpen, jobId, clipIndex, draftKey]);
 
-    // When user edits text, redistribute words across original timestamps
+    // Keep the draft current while the editor is open (after it has loaded,
+    // so the defaults never overwrite a saved draft).
+    useEffect(() => {
+        if (!isOpen || !hydrated.current) return;
+        try {
+            localStorage.setItem(draftKey, JSON.stringify({ v: 2, text: editableText, captions, style: currentStyle() }));
+        } catch { /* storage full or off: the editor still works */ }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, editableText, captions, position, fontSize, fontName, fontColor, highlightColor,
+        borderColor, borderWidth, bgColor, bgOpacity, style, effect, baseOpacity, uppercase,
+        reveal, shadow, oneWord]);
+
+    // When the user edits text, keep every untouched word on its own timestamp
+    // and re-time only what changed (see lib/alignWords).
     const handleTextEdit = (newText) => {
         setEditableText(newText);
-        const newWords = newText.split(/\s+/).filter(w => w.length > 0);
-        if (newWords.length === 0 || originalCaptions.length === 0) {
-            setCaptions([]);
-            return;
-        }
-
-        // Distribute new words across the time span of original captions
-        const totalDurationMs = originalCaptions[originalCaptions.length - 1].endMs - originalCaptions[0].startMs;
-        const startMs = originalCaptions[0].startMs;
-        const wordDurationMs = totalDurationMs / newWords.length;
-
-        const newCaptions = newWords.map((word, i) => ({
-            text: word,
-            startMs: Math.round(startMs + i * wordDurationMs),
-            endMs: Math.round(startMs + (i + 1) * wordDurationMs),
-        }));
-        setCaptions(newCaptions);
+        setCaptions(alignEditedWords(originalCaptions, newText));
     };
 
     if (!isOpen) return null;
@@ -368,15 +421,23 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                             />
                         </div>
 
-                        {/* Size */}
+                        {/* Size: text height as % of the frame height (font_size units
+                            are PlayResY-288 points before the 0.85 burn factor). */}
                         <div>
-                            <p className="eyebrow mb-2">Size</p>
-                            <SegmentedControl
-                                options={SIZE_OPTIONS}
-                                value={fontSize}
-                                onChange={setFontSize}
-                                size="sm"
+                            <div className="flex items-baseline justify-between mb-2">
+                                <p className="eyebrow">Size</p>
+                                <span className="readout tabular-nums">{sizeToPercent(fontSize).toFixed(1)}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min={4}
+                                max={20}
+                                step={0.5}
+                                value={sizeToPercent(fontSize)}
+                                onChange={(e) => setFontSize(percentToSize(Number(e.target.value)))}
+                                className="w-full accent-[color:var(--color-accent)]"
                             />
+                            <div className="flex justify-between readout mt-1"><span>4</span><span>20</span></div>
                         </div>
 
                         {style === 'karaoke' && (
@@ -562,6 +623,8 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                                 // Remotion data
                                 remotion: useRemotionPreview ? subtitleConfig : null,
                                 captions: textEdited ? captions : null,
+                                // Text back to the transcript: drop the clip's saved edits.
+                                resetWords: originalCaptions.length > 0 && !textEdited,
                             };
                             const bulkRunning = bulkProgress?.running;
                             return (
@@ -571,7 +634,7 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                                             cancel
                                         </button>
                                         <button
-                                            onClick={() => onGenerate(styleOptions)}
+                                            onClick={() => { clearDraft(); onGenerate(styleOptions); }}
                                             disabled={isProcessing}
                                             className="btn-primary flex-1"
                                         >
@@ -595,7 +658,7 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                                         doesn't want captions is stuck with them. */}
                                     {onRemove && (
                                         <button
-                                            onClick={onRemove}
+                                            onClick={() => { clearDraft(); onRemove(); }}
                                             disabled={isProcessing}
                                             className="text-xs text-muted underline underline-offset-2 lowercase hover:text-ink2 disabled:opacity-50"
                                         >

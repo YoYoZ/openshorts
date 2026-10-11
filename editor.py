@@ -2,6 +2,7 @@ import os
 import json
 import re
 import subprocess
+import render_ops
 import time
 from typing import List
 from google import genai
@@ -515,7 +516,7 @@ class VideoEditor:
                 else:
                     cmd_bytes.append(arg)
             
-            subprocess.run(cmd_bytes, check=True, env=env, timeout=1800)
+            render_ops.run(cmd_bytes, check=True, env=env, timeout=1800)
         except subprocess.TimeoutExpired:
             print("❌ FFmpeg filter timed out after 1800s.")
             raise RuntimeError("FFmpeg filter timed out after 1800s.")

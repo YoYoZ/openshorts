@@ -20,7 +20,21 @@ export function groupCaptionsIntoBlocks(
   let currentWords: CaptionWord[] = [];
   let blockStartMs = 0;
 
-  for (const word of captions) {
+  // Spoken order, times made monotonic (subtitles.fix_word_overlaps): no
+  // word runs past the next one's start, and a word stamped before the
+  // previous one starts where that one ends. Never sort by time: a
+  // mis-stamped word would jump to the wrong place in the sentence.
+  const sorted = captions.map((w) => ({ ...w }));
+  for (let i = 1; i < sorted.length; i++) {
+    const a = sorted[i - 1];
+    const b = sorted[i];
+    if (b.startMs >= a.endMs) continue;
+    if (b.startMs >= a.startMs + 40) a.endMs = b.startMs;
+    else b.startMs = Math.max(a.endMs, a.startMs + 40);
+    if (b.endMs < b.startMs + 40) b.endMs = b.startMs + 40;
+  }
+
+  for (const word of sorted) {
     if (currentWords.length === 0) {
       currentWords.push(word);
       blockStartMs = word.startMs;

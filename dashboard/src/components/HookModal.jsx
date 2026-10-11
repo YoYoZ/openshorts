@@ -34,7 +34,8 @@ const FONT_CSS = {
     serif: { fontFamily: "'Noto Serif', Georgia, serif", fontWeight: 700 },
 };
 // The style's own typeface when none is picked (what hooks.py renders).
-const styleFont = (st) => (st === 'pill' ? 'montserrat' : 'serif');
+// Montserrat for every style unless another face is picked (hooks.py agrees).
+const styleFont = () => 'montserrat';
 
 // auto: the server keeps the hook off the speaker's face and the captions
 // (hook_placement.py). The preview cannot see faces and draws it at the top.
@@ -57,13 +58,16 @@ function loadHookPrefs() {
     try { return JSON.parse(localStorage.getItem('os_hook_prefs')) || {}; } catch { return {}; }
 }
 
-export default function HookModal({ isOpen, onClose, onGenerate, onRemove, isProcessing, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
+export default function HookModal({ isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
     const prefs = loadHookPrefs();
     const [text, setText] = useState(initialText || 'POV: You are using the viral hook feature');
     // Stored as `pos`, not `position`: before 'auto' existed every save wrote
     // 'top' whether or not the user ever touched the control.
     const [position, setPosition] = useState(prefs.pos || 'auto');
-    const [size, setSize] = useState(prefs.size || 'M');
+    // Size multiplier (1 = the style's default); old prefs stored S/M/L.
+    const LEGACY_SIZES = { S: 0.8, M: 1.0, L: 1.3 };
+    const [size, setSize] = useState(
+        typeof prefs.size === 'number' ? prefs.size : (LEGACY_SIZES[prefs.size] ?? 1.0));
     const [style, setStyle] = useState(prefs.style || 'pill');
     // null = follow the style's own typeface.
     const [font, setFont] = useState(prefs.font || null);
@@ -95,13 +99,7 @@ export default function HookModal({ isOpen, onClose, onGenerate, onRemove, isPro
         }
     };
 
-    const getSizeStyle = () => {
-        switch (size) {
-            case 'S': return { fontSize: '14px', maxWidth: '80%' };
-            case 'L': return { fontSize: '24px', maxWidth: '95%' };
-            case 'M': default: return { fontSize: '18px', maxWidth: '90%' };
-        }
-    };
+    const getSizeStyle = () => ({ fontSize: `${Math.round(18 * size)}px`, maxWidth: '95%' });
 
     const pillFontFace = "@font-face{font-family:'Montserrat-ExtraBold';src:url('/fonts/Montserrat-ExtraBold.ttf') format('truetype');font-weight:800;}"
         + "@font-face{font-family:'Anton-Regular';src:url('/fonts/Anton-Regular.ttf') format('truetype');font-weight:400;}";
@@ -235,13 +233,20 @@ export default function HookModal({ isOpen, onClose, onGenerate, onRemove, isPro
 
                         {/* Size Control */}
                         <div>
-                            <p className="eyebrow mb-2">Size</p>
-                            <SegmentedControl
-                                options={SIZE_OPTIONS}
+                            <div className="flex items-baseline justify-between mb-2">
+                                <p className="eyebrow">Size</p>
+                                <span className="readout tabular-nums">{Math.round(size * 100)}%</span>
+                            </div>
+                            <input
+                                type="range"
+                                min={0.5}
+                                max={2}
+                                step={0.05}
                                 value={size}
-                                onChange={setSize}
-                                size="sm"
+                                onChange={(e) => setSize(Number(e.target.value))}
+                                className="w-full accent-[color:var(--color-accent)]"
                             />
+                            <div className="flex justify-between readout mt-1"><span>50%</span><span>200%</span></div>
                         </div>
 
                         {/* Entrance Animation (new) */}
@@ -325,6 +330,45 @@ export default function HookModal({ isOpen, onClose, onGenerate, onRemove, isPro
                             {isProcessing ? 'saving...' : (burnedHook ? 'update hook' : 'add hook')}
                         </button>
                     </div>
+                    {onApplyAll && bulkCount > 1 && (() => {
+                        const running = !!bulkProgress?.running;
+                        const finished = !running && bulkProgress?.total > 0 && bulkProgress.current === bulkProgress.total;
+                        return (
+                            <div className="mt-2 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        try {
+                                            localStorage.setItem('os_hook_prefs', JSON.stringify({
+                                                style, font, pos: position, size, entranceAnimation,
+                                            }));
+                                        } catch { /* ignore */ }
+                                        onApplyAll({ position, size, style, font: effectiveFont, remotion: hookConfig });
+                                    }}
+                                    disabled={running || isProcessing}
+                                    className="btn-ghost w-full"
+                                    title="Each clip keeps its own hook text; this look also becomes the default for new projects."
+                                >
+                                    {running && <Loader2 size={16} className="animate-spin text-brass" />}
+                                    {running
+                                        ? `applying to clip ${bulkProgress.current} of ${bulkProgress.total}…`
+                                        : `apply this style to all ${bulkCount} clips`}
+                                </button>
+                                {running && (
+                                    <div className="mt-2 h-1 rounded-full bg-paper3 overflow-hidden">
+                                        <div className="h-full bg-brass transition-[width] duration-500"
+                                            style={{ width: `${(bulkProgress.current / bulkProgress.total) * 100}%` }} />
+                                    </div>
+                                )}
+                                {finished && bulkProgress.errors > 0 && (
+                                    <p className="text-xs text-danger mt-1">{bulkProgress.errors} clip(s) failed.</p>
+                                )}
+                                <p className="readout normal-case mt-1.5">
+                                    Keeps each clip's own text. Also the default for new projects.
+                                </p>
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
         </Modal>

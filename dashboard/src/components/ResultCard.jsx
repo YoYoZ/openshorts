@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Download, Share2, Instagram, Youtube, Video, AlertCircle, Loader2, Copy, Check, Wand2, Type, Calendar, Languages, FileText, Link2, Scissors, Crosshair, TrendingUp } from 'lucide-react';
 import { getApiUrl } from '../config';
 import { apiFetch } from '../lib/api';
+import RenderOverlay from './RenderOverlay';
 import SubtitleModal from './SubtitleModal';
 import HookModal from './HookModal';
 import TranslateModal from './TranslateModal';
@@ -12,7 +13,7 @@ import TikTokDraftNotice from './TikTokDraftNotice';
 import { useAuth } from '../contexts/AuthContext';
 import { renderInBrowser } from '../lib/renderInBrowser';
 
-const QUIET_BTN = 'group flex flex-col items-center justify-center gap-1 py-2.5 sm:py-2 px-1 rounded-input border border-rule hover:bg-paper3 text-[11px] lowercase text-ink2 whitespace-nowrap transition-colors disabled:opacity-45 disabled:cursor-not-allowed';
+const QUIET_BTN = 'relative group flex flex-col items-center justify-center gap-1 py-2.5 sm:py-2 px-1 rounded-input border border-rule hover:bg-paper3 text-[11px] lowercase text-ink2 whitespace-nowrap transition-colors disabled:opacity-45 disabled:cursor-not-allowed';
 
 const PLATFORM_OPTIONS = [
     { value: 'tiktok', label: 'tiktok', icon: <Video size={16} /> },
@@ -36,7 +37,13 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
+// Editing steps run in this order: each one rebuilds on the previous, so going
+// back to an earlier step means redoing the later ones.
+const StepNo = ({ n }) => (
+    <span className="absolute top-1 left-1.5 readout text-[9px] text-brass">{n}</span>
+);
+
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -66,7 +73,23 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         do { prev = f; f = f.replace(/^subtitled_\d+_/, '').replace(/^hooked_\d+_/, '').replace(/^hook_/, ''); } while (f !== prev);
         return f;
     };
-    const originalVideoUrl = getApiUrl((clip.video_url || '').replace(/[^/]+$/, stripBurns((clip.video_url || '').split('/').pop())));
+    // Finished-editing mark (clip.done in the job metadata).
+    const [done, setDone] = useState(!!clip.done);
+    useEffect(() => { setDone(!!clip.done); }, [clip.done]);
+    const toggleDone = async () => {
+        const next = !done;
+        setDone(next);
+        try {
+            const res = await apiFetch(`/api/clip/${jobId}/${index}/done`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ done: next }),
+            });
+            if (!res.ok) setDone(!next);
+        } catch {
+            setDone(!next);
+        }
+    };
     const [currentVideoUrl, setCurrentVideoUrl] = useState(getApiUrl(clip.video_url));
     // Where the <video> element pulls its bytes from. The clips are archived to
     // R2 anyway, and R2 egress is free and edge-served, while /videos is served
@@ -141,6 +164,13 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     // (subtitles, hooks, effects) never get silently dropped.
     // A reopened project seeds it from the persisted project state.
     const [serverVideoFile, setServerVideoFile] = useState(initialState?.server_file || (clip.video_url || '').split('/').pop());
+    // Base for the editors' previews: the card's CURRENT server file with its
+    // burned layers stripped. clip.video_url lags behind renders made in this
+    // card, which left the subtitle editor previewing an older version.
+    const originalVideoUrl = getApiUrl(`/videos/${jobId}/${stripBurns(serverVideoFile)}`);
+    // A render of this clip is running on the server (any of: subtitles,
+    // hook, recut, reframe, auto edit), reported by RenderOverlay's polling.
+    const [serverBusy, setServerBusy] = useState(false);
     const [videoErrored, setVideoErrored] = useState(false);
     const [resolution, setResolution] = useState(null);
 
@@ -471,7 +501,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     input_filename: serverVideoFile,
                     // Edited caption text (clip-relative ms); null = server
                     // regenerates from the transcript as before.
-                    words: options.captions || null
+                    words: options.captions || null,
+                    reset_words: !!options.resetWords
                 })
             });
 
@@ -542,7 +573,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     clip_index: index,
                     text: payload.text,
                     position: payload.position,
-                    size: payload.size,
+                    size: typeof payload.size === 'number' ? 'M' : payload.size,
+                    scale: typeof payload.size === 'number' ? payload.size : null,
                     style: payload.style || 'pill',
                     font: payload.font || null,
                     duration_seconds: payload.remotion?.displayDurationSec ?? null,
@@ -746,8 +778,13 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
     const durationReadout = formatDuration(clip);
 
+    // While anything renders this clip, every editing step waits: starting a
+    // second edit on a file that is about to be replaced scrambled the layers.
+    const busy = serverBusy || isEditing || isSubtitling || isHooking || isTranslating
+        || !!bulkProgress?.running || !!bulkHookProgress?.running;
+
     return (
-        <div className="card overflow-hidden flex flex-col md:flex-row group hover:border-rule2 transition-colors animate-fade md:min-h-[420px]" style={{ animationDelay: `${index * 0.1}s` }}>
+        <div className={`card overflow-hidden flex flex-col md:flex-row group transition-colors animate-fade md:min-h-[420px] ${done ? 'border-ok/60 bg-ok/[0.04]' : 'hover:border-rule2'}`} style={{ animationDelay: `${index * 0.1}s` }}>
             {/* Left: Video Preview — 9:16 column matching the fixed card height */}
             {/* A full-width 9:16 preview on a phone is ~640px tall on its own,
                 which pushed the title, captions and every action off-screen.
@@ -819,14 +856,13 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     )}
                 </div>
 
-                {/* Auto Edit Overlay if Processing */}
-                {isEditing && (
-                    <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center z-10 p-4 text-center">
-                        <Loader2 size={28} className="text-brass animate-spin mb-3" />
-                        <span className="text-xs text-ink lowercase">ai magic in progress…</span>
-                        <span className="readout mt-1.5">APPLYING VIRAL EDITS · ZOOMS</span>
-                    </div>
-                )}
+                {/* Live progress of any server re-render of this clip. */}
+                <RenderOverlay
+                    jobId={jobId}
+                    clipIndex={index}
+                    onBusyChange={setServerBusy}
+                    fallbackLabel={isEditing ? 'auto edit' : isSubtitling ? 'burning subtitles' : isHooking ? 'adding hook' : null}
+                />
             </div>
 
             {/* Right: Content & Details */}
@@ -919,27 +955,47 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 mt-auto pt-4 border-t border-rule">
                     {onEditClip && (
                         <button
-                            onClick={() => onEditClip(index)}
+                            onClick={() => { videoRef.current?.pause(); onEditClip(index); }}
+                            disabled={busy}
                             className={QUIET_BTN}
                         >
                             <Scissors size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
-                            edit clip
+                            <><StepNo n={1} />edit clip</>
                         </button>
                     )}
 
                     {onReframeClip && (
                         <button
-                            onClick={() => onReframeClip(index)}
+                            onClick={() => { videoRef.current?.pause(); onReframeClip(index); }}
+                            disabled={busy}
                             className={QUIET_BTN}
                         >
                             <Crosshair size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
-                            reframing
+                            <><StepNo n={2} />reframing</>
                         </button>
                     )}
 
                     <button
-                        onClick={handleAutoEdit}
-                        disabled={isEditing}
+                        onClick={() => { videoRef.current?.pause(); setShowSubtitleModal(true); }}
+                        disabled={busy}
+                        className={QUIET_BTN}
+                    >
+                        {isSubtitling ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Type size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
+                        {isSubtitling ? 'adding…' : <><StepNo n={3} />subtitles</>}
+                    </button>
+
+                    <button
+                        onClick={() => { videoRef.current?.pause(); setShowHookModal(true); }}
+                        disabled={busy}
+                        className={QUIET_BTN}
+                    >
+                        {isHooking ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Wand2 size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
+                        {isHooking ? 'saving…' : <><StepNo n={4} />edit hook</>}
+                    </button>
+
+                    <button
+                        onClick={() => { videoRef.current?.pause(); handleAutoEdit(); }}
+                        disabled={busy}
                         className={QUIET_BTN}
                     >
                         {isEditing ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Wand2 size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
@@ -947,26 +1003,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     </button>
 
                     <button
-                        onClick={() => setShowSubtitleModal(true)}
-                        disabled={isSubtitling}
-                        className={QUIET_BTN}
-                    >
-                        {isSubtitling ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Type size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
-                        {isSubtitling ? 'adding…' : 'subtitles'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowHookModal(true)}
-                        disabled={isHooking}
-                        className={QUIET_BTN}
-                    >
-                        {isHooking ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Wand2 size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
-                        {isHooking ? 'saving…' : 'edit hook'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowTranslateModal(true)}
-                        disabled={isTranslating}
+                        onClick={() => { videoRef.current?.pause(); setShowTranslateModal(true); }}
+                        disabled={busy}
                         className={QUIET_BTN}
                     >
                         {isTranslating ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Languages size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
@@ -994,6 +1032,18 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     >
                         <Download size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
                         {downloadPct === null ? 'download' : `downloading ${downloadPct}%`}
+                    </button>
+
+                    {/* Finished editing this clip: tints the card green. */}
+                    <button
+                        onClick={toggleDone}
+                        className={`relative group flex flex-col items-center justify-center gap-1 py-2.5 sm:py-2 px-1 rounded-input border text-[11px] lowercase whitespace-nowrap transition-colors ${done
+                            ? 'border-ok bg-ok/20 text-ok hover:bg-ok/25'
+                            : 'border-ok/40 bg-ok/5 text-ok/80 hover:bg-ok/15'}`}
+                        title={done ? 'marked as finished, click to reopen' : 'mark this clip as finished'}
+                    >
+                        <Check size={16} className="shrink-0" />
+                        {done ? 'done' : 'ok'}
                     </button>
                 </div>
             </div>
@@ -1164,7 +1214,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 onClose={() => setShowSubtitleModal(false)}
                 onGenerate={handleSubtitle}
                 onApplyAll={onBulkSubtitle ? async (options) => {
-                    await onBulkSubtitle(options);
+                    await onBulkSubtitle({ ...options, clipIndex: index });
                     setShowSubtitleModal(false);
                 } : undefined}
                 onRemove={handleRemoveSubtitles}
@@ -1181,6 +1231,12 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 isOpen={showHookModal}
                 onClose={() => setShowHookModal(false)}
                 onGenerate={handleHook}
+                onApplyAll={onBulkHook ? async (options) => {
+                    await onBulkHook(options);
+                    setShowHookModal(false);
+                } : undefined}
+                bulkCount={clipCount}
+                bulkProgress={bulkHookProgress}
                 isProcessing={isHooking}
                 videoUrl={originalVideoUrl}
                 initialText={clip.viral_hook_text}

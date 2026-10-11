@@ -5,6 +5,10 @@ import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
 import ProcessingAnimation from './components/ProcessingAnimation';
+import JobProgress from './components/JobProgress';
+import RecentProjects from './components/RecentProjects';
+import TranscriptionSettings from './components/TranscriptionSettings';
+import FolderSettings from './components/FolderSettings';
 // import Gallery from './components/Gallery';
 import ThumbnailStudio from './components/ThumbnailStudio';
 import SaaShortsTab from './components/SaaShortsTab';
@@ -16,7 +20,6 @@ import UsageMeter from './components/UsageMeter';
 import TopUpModal from './components/TopUpModal';
 import WatermarkModal, { watermarkNoticeDismissed } from './components/WatermarkModal';
 import { getApiUrl } from './config';
-import StarBanner from './components/StarBanner';
 import PlanChoiceModal from './components/PlanChoiceModal';
 import ClipTutorial from './components/ClipTutorial';
 import OnboardingSurvey from './components/OnboardingSurvey';
@@ -30,7 +33,7 @@ import ProfileMenu from './components/ProfileMenu';
 import Modal from './components/ui/Modal';
 import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
-import { track } from './lib/analytics';
+import { track } from './lib/events';
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
@@ -261,9 +264,13 @@ const readableError = (raw) => {
 const SESSION_MAX_AGE = 86400000; // 24 hours
 
 // Mock polling function
-const pollJob = async (jobId) => {
-  const res = await apiFetch(`/api/status/${jobId}`);
-  if (!res.ok) throw new Error('Status check failed');
+const pollJob = async (jobId, raw = false) => {
+  const res = await apiFetch(`/api/status/${jobId}${raw ? '?raw=1' : ''}`);
+  if (!res.ok) {
+    const err = new Error('Status check failed');
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 };
 
@@ -350,12 +357,17 @@ function App() {
   // Bulk subtitles: apply one style to every clip of the job (triggered from
   // within a clip's subtitle modal via "apply to all").
   const [bulkSub, setBulkSub] = useState({ running: false, current: 0, total: 0, errors: 0 });
+  const [bulkHook, setBulkHook] = useState({ running: false, current: 0, total: 0, errors: 0 });
   const [downloadingAll, setDownloadingAll] = useState(false);
   // Pre-flight quality gate: { info: {max_height, min_height, cookies_invalid}, data }
   const [qualityGate, setQualityGate] = useState(null);
   const [logs, setLogs] = useState([]);
   // When each server log line arrived (epoch s, parallel to logs), from /api/status.
   const [logTimes, setLogTimes] = useState([]);
+  // Per-stage progress from /api/status (progress_events.py on the backend).
+  const [jobProgress, setJobProgress] = useState(null);
+  // Curated log by default; the raw toggle shows every pipeline line.
+  const [rawLogs, setRawLogs] = useState(false);
   // Collapsed on phones: the log tail is the least useful thing on a 360px
   // screen and it was pushing the actual clips a full scroll down.
   const [logsVisible, setLogsVisible] = useState(() => {
@@ -575,6 +587,26 @@ function App() {
     handleClipStateChange(index, { activeLayers: null, serverVideoFile: newFile });
   };
 
+  // Open a job from the sidebar's project list. The status poll loads it:
+  // a running job keeps streaming progress, a finished one comes back from
+  // disk with its clips.
+  const openProject = (projectJobId) => {
+    if (projectJobId === jobId && status !== 'idle') { setActiveTab('dashboard'); return; }
+    flushClipState();
+    setProjectState(null);
+    setNoSource(false);
+    setJobId(projectJobId);
+    setResults(null);
+    setLogs([]);
+    setLogTimes([]);
+    setJobProgress(null);
+    setJobError('');
+    setQualityGate(null);
+    setProcessingMedia({ type: 'server', payload: `/api/source/${projectJobId}` });
+    setStatus('processing');
+    setActiveTab('dashboard');
+  };
+
   // Reopen an archived project from the History tab: the backend re-downloads
   // its files from R2 into the server's working dir and returns the full state.
   const restoreProject = async (projectJobId) => {
@@ -627,6 +659,11 @@ function App() {
             max_duration: options.maxDuration ?? null,
             // Chain from the clip's current server file (its video_url basename).
             input_filename: (clips[i].video_url || '').split('/').pop(),
+            // The clip open in the editor carries its text edits; every other
+            // clip keeps the edits it already has (the server burns them).
+            ...(i === options.clipIndex
+              ? { words: options.captions || null, reset_words: !!options.resetWords }
+              : {}),
           }),
         });
         if (!res.ok) errors++;
@@ -637,6 +674,69 @@ function App() {
     setBulkSub({ running: false, current: total, total, errors });
     refreshMe();
     // Refresh results so each ResultCard picks up its new subtitled video_url.
+    try {
+      const data = await pollJob(jobId);
+      if (data.result) setResults(data.result);
+    } catch { /* keep current results */ }
+  };
+
+  // One hook look (style, font, size, position, duration) on every clip of
+  // the job; each clip keeps its own hook text. Also saved as the default for
+  // new projects' auto-hooks.
+  const handleBulkHooks = async (options) => {
+    let clips = results?.clips || [];
+    try {
+      const fresh = await pollJob(jobId);          // current hook text per clip
+      if (fresh.result?.clips) clips = fresh.result.clips;
+    } catch { /* use what we have */ }
+    const targets = clips
+      .map((c, i) => ({ i, text: (c.auto_hook?.text || c.viral_hook_text || '').trim() }))
+      .filter((t) => t.text);
+    const total = targets.length;
+    if (!total) return;
+    const scale = typeof options.size === 'number' ? options.size : null;
+    setBulkHook({ running: true, current: 0, total, errors: 0 });
+    let errors = 0;
+    for (let n = 0; n < total; n++) {
+      const { i, text } = targets[n];
+      setBulkHook({ running: true, current: n + 1, total, errors });
+      try {
+        const res = await apiFetch('/api/hook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: jobId,
+            clip_index: i,
+            text,
+            position: options.position,
+            size: scale ? 'M' : (options.size || 'M'),
+            scale,
+            style: options.style || 'pill',
+            font: options.font || null,
+            duration_seconds: options.remotion?.displayDurationSec ?? null,
+            input_filename: (clips[i].video_url || '').split('/').pop(),
+          }),
+        });
+        if (!res.ok) errors++;
+      } catch {
+        errors++;
+      }
+    }
+    setBulkHook({ running: false, current: total, total, errors });
+    // Default for new projects: the server's auto-hook settings and the
+    // upload form's style picker.
+    try {
+      await apiFetch('/api/local/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hook_defaults: {
+          style: options.style || 'pill', font: options.font || null, scale: scale || 1,
+          position: options.position || 'auto',
+          duration_seconds: options.remotion?.displayDurationSec ?? 5,
+        } }),
+      });
+      localStorage.setItem('os_auto_hook_style_v2', options.style || 'pill');
+    } catch { /* defaults are a convenience */ }
     try {
       const data = await pollJob(jobId);
       if (data.result) setResults(data.result);
@@ -807,8 +907,8 @@ function App() {
     if ((status === 'processing' || status === 'completed') && jobId) {
       interval = setInterval(async () => {
         try {
-          const data = await pollJob(jobId);
-          console.log("Job status:", data);
+          const data = await pollJob(jobId, rawLogs);
+          if (data.progress) setJobProgress(data.progress);
 
           // Update results if available (real-time)
           if (data.result) {
@@ -838,12 +938,25 @@ function App() {
             }
           }
         } catch (e) {
+          // The job is gone (deleted, or killed before it wrote anything):
+          // stop polling a ghost and go back to the start screen.
+          if (e.status === 404) {
+            clearInterval(interval);
+            setStatus('idle');
+            setJobId(null);
+            setResults(null);
+            setJobProgress(null);
+            setProcessingMedia(null);
+            setSessionRecovered(false);
+            setJobError('');
+            return;
+          }
           console.error("Polling error", e);
         }
-      }, 2000);
+      }, 1000);
     }
     return () => clearInterval(interval);
-  }, [status, jobId, refreshMe]);
+  }, [status, jobId, refreshMe, rawLogs]);
 
 
   // silent: background auto-fetch — never alert(), just log. Managed users need
@@ -876,7 +989,8 @@ function App() {
   // A self-hosted server running the moment picker on a local LLM
   // (LLM_BASE_URL) does not need a Gemini key for the core pipeline.
   const geminiOk = !!apiKey || !!localLlm;
-  const keysMissing = !billingEnabled && (!geminiOk || !uploadPostKey);
+  // Upload-Post only powers social auto-posting; clipping works without it.
+  const keysMissing = !billingEnabled && !geminiOk;
   const needsPlan = billingEnabled && !isManaged;   // hosted, signed-out or no active plan/trial
 
   // Fresh sign-up: Clip Generator tutorial (AuthContext set os_show_clip_tutorial
@@ -1044,6 +1158,7 @@ function App() {
     setStatus('processing');
     setJobError('');
     setLogs(["Starting process..."]);
+    setJobProgress(null);
     setLogTimes([Date.now() / 1000]);
     setResults(null);
     // Studio handovers have no local media object; the preview switches to the
@@ -1200,6 +1315,7 @@ function App() {
     setJobId(null);
     setResults(null);
     setLogs([]);
+    setJobProgress(null);
     setLogTimes([]);
     setProcessingMedia(null);
     setProjectState(null);
@@ -1220,10 +1336,6 @@ function App() {
     { id: 'dashboard', ord: '01', icon: LayoutDashboard, label: 'Clip Generator', short: 'clips', primary: true },
     // Cloud only: it runs on the managed pipeline and the Upload-Post connection.
     ...(billingEnabled ? [{ id: 'autopilot', ord: '02', icon: Rocket, label: 'Autopilot', short: 'autopilot', isNew: true }] : []),
-    { id: 'saasshorts', ord: '03', icon: Sparkles, label: 'AI Shorts', short: 'ai shorts', byok: true, primary: true },
-    { id: 'ai-agent', ord: '04', icon: Bot, label: 'AI Agent', short: 'agent', byok: true },
-    { id: 'ugc-gallery', ord: '05', icon: LayoutGrid, label: 'UGC Gallery', short: 'gallery', primary: true },
-    { id: 'thumbnails', ord: '06', icon: Image, label: 'YouTube Studio', short: 'studio', primary: true },
     ...(billingEnabled && isSignedIn ? [{ id: 'history', ord: '07', icon: History, label: 'History', short: 'history' }] : []),
     { id: 'settings', ord: '08', icon: Settings, label: 'Settings', short: 'settings' },
   ];
@@ -1295,7 +1407,7 @@ function App() {
         <span className="font-display lowercase text-lg text-ink hidden lg:block">openshorts</span>
       </a>
 
-      <nav className="flex-1 px-4 py-4 space-y-1">
+      <nav className="px-4 py-4 space-y-1 shrink-0">
         {navItems.map((item) => {
           const NavIcon = item.icon;
           const isActive = activeTab === item.id;
@@ -1322,6 +1434,15 @@ function App() {
           );
         })}
       </nav>
+
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar hidden lg:block">
+        <RecentProjects
+          activeJobId={jobId}
+          onOpen={openProject}
+          onDeleted={(id) => { if (id === jobId) handleReset(); }}
+        />
+      </div>
+      <div className="flex-1 lg:hidden" />
 
       <div className="p-4 border-t border-rule space-y-1">
         <NavFooterLinks collapsed />
@@ -1439,8 +1560,8 @@ function App() {
        viewport ever gets, so a h-screen shell hides its own bottom bar behind
        the browser chrome until the user scrolls. */
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] bg-paper overflow-hidden">
-      <Sidebar />
-      {navOpen && <MobileNavDrawer />}
+      {Sidebar()}
+      {navOpen && MobileNavDrawer()}
 
       <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden relative">
         {/* Top Header */}
@@ -1591,6 +1712,8 @@ function App() {
               </div>
               {/* Self-hosted installs have no account page, so the agent
                   how-to lives here; cloud users get it (with OAuth) in Account. */}
+              <FolderSettings />
+              {!billingEnabled && <TranscriptionSettings />}
               {!billingEnabled && <div className="mb-6"><McpConnectCard cloud={false} /></div>}
               {isManaged ? (
                 <div className="card p-6 mb-2">
@@ -2090,8 +2213,18 @@ function App() {
                   </div>
                 )}
 
-                {/* Video Preview */}
-                {processingMedia && (
+                {/* Real per-stage progress while the job runs. */}
+                {status === 'processing' && (
+                  <JobProgress
+                    progress={jobProgress}
+                    running={status === 'processing'}
+                    isUpload={processingMedia?.type === 'file' || processingMedia?.type === 'server'}
+                  />
+                )}
+
+                {/* Source preview once the clips exist: hovering a clip plays
+                    that moment of the source here. */}
+                {processingMedia && status !== 'processing' && (
                   <ProcessingAnimation
                     media={processingMedia}
                     isComplete={status === 'complete'}
@@ -2114,13 +2247,6 @@ function App() {
                   </div>
                 )}
 
-                {/* The render is dead time: the user is watching a progress bar
-                    with nothing to do, so this is where the one star ask goes. */}
-                {status === 'processing' && (
-                  <div className="my-3">
-                    <StarBanner message="Got a minute while this renders?" />
-                  </div>
-                )}
 
                 {/* Logs Terminal */}
                 <div className={`bg-paper rounded-card border border-rule overflow-hidden flex flex-col transition-all duration-500 ${status === 'complete' ? `min-h-0 opacity-50 hover:opacity-100 ${logsVisible ? 'h-32' : 'h-auto'}` : `flex-1 ${logsVisible ? 'min-h-[160px] sm:min-h-[200px]' : 'min-h-0 flex-none'}`}`}>
@@ -2134,6 +2260,18 @@ function App() {
                       <Terminal size={12} /> System Logs
                     </span>
                     <span className="flex items-center gap-2 text-muted">
+                      {logsVisible && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => { e.stopPropagation(); setRawLogs((r) => !r); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setRawLogs((r) => !r); } }}
+                          className={`readout px-2 py-0.5 rounded-full border ${rawLogs ? 'border-brass text-brass' : 'border-rule'}`}
+                          title="show every line the pipeline printed"
+                        >
+                          raw
+                        </span>
+                      )}
                       {!logsVisible && logs.length > 0 && (
                         <span className="readout normal-case">{logs.length}</span>
                       )}
@@ -2173,7 +2311,7 @@ function App() {
                     )}
                     {results?.cost_analysis && !isManaged && (
                       <span className="readout bg-paper3 px-2.5 py-1 rounded-full" title={`Input: ${results.cost_analysis.input_tokens} | Output: ${results.cost_analysis.output_tokens}`}>
-                        GEMINI · ${results.cost_analysis.total_cost.toFixed(5)}
+                        {(results.cost_analysis.model || 'llm').toUpperCase()} · ${results.cost_analysis.total_cost.toFixed(4)}
                       </span>
                     )}
                   </h2>
@@ -2318,6 +2456,8 @@ function App() {
                           onBulkSubtitle={handleBulkSubtitles}
                           clipCount={results.clips.length}
                           bulkProgress={bulkSub}
+                          onBulkHook={handleBulkHooks}
+                          bulkHookProgress={bulkHook}
                         />
                       ))}
                     </div>

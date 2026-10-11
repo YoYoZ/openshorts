@@ -3,7 +3,6 @@ import { Loader2, Calendar, CheckCircle, AlertCircle, Video, Instagram, Youtube,
 import { apiFetch } from '../lib/api';
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
-import TikTokDraftNotice from './TikTokDraftNotice';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -24,6 +23,8 @@ const TIMEZONES = [
     { value: 'America/Sao_Paulo', label: '(GMT-03:00) Sao Paulo' },
     { value: 'Atlantic/Azores', label: '(GMT-01:00) Azores' },
     { value: 'UTC', label: '(GMT+00:00) UTC' },
+    { value: 'Europe/Kyiv', label: '(GMT+02:00/+03:00) Kyiv' },
+    { value: 'Europe/Warsaw', label: '(GMT+01:00/+02:00) Warsaw' },
     { value: 'Europe/London', label: '(GMT+00:00) London' },
     { value: 'Europe/Madrid', label: '(GMT+01:00) Madrid' },
     { value: 'Europe/Paris', label: '(GMT+01:00) Paris' },
@@ -40,10 +41,19 @@ const TIMEZONES = [
     { value: 'Pacific/Auckland', label: '(GMT+12:00) Auckland' },
 ];
 
+// Posting goes through our own YouTube Data API upload (youtube_upload.py);
+// TikTok and Instagram are not wired up, so they are shown but disabled.
 const PLATFORM_OPTIONS = [
-    { value: 'tiktok', label: 'TikTok', icon: <Video size={16} /> },
-    { value: 'instagram', label: 'Instagram', icon: <Instagram size={16} /> },
+    { value: 'tiktok', label: 'TikTok', icon: <Video size={16} />, disabled: true },
+    { value: 'instagram', label: 'Instagram', icon: <Instagram size={16} />, disabled: true },
     { value: 'youtube', label: 'YouTube', icon: <Youtube size={16} /> },
+];
+
+const CADENCES = [
+    { value: 'twice', label: '2 a day' },
+    { value: 'daily', label: '1 a day' },
+    { value: 'every2', label: 'every 2 days' },
+    { value: 'weekly', label: '1 a week' },
 ];
 
 function getDayLabel(date) {
@@ -67,101 +77,100 @@ function detectTimezone() {
     try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         if (TIMEZONES.find(t => t.value === tz)) return tz;
+        if (tz === 'Europe/Kiev') return 'Europe/Kyiv';
         return 'UTC';
     } catch {
         return 'UTC';
     }
 }
 
-export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploadPostKey, uploadUserId, isManaged }) {
-    const [time, setTime] = useState('12:00');
+export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
+    const [time, setTime] = useState('18:00');
+    const [time2, setTime2] = useState('12:00');     // second slot for 2/day
+    const [cadence, setCadence] = useState('daily');
     const [timezone, setTimezone] = useState(detectTimezone);
-    const [platforms, setPlatforms] = useState({
-        tiktok: true,
-        instagram: true,
-        youtube: true
-    });
     const [startOffset, setStartOffset] = useState(1);
+    const [yt, setYt] = useState(null);   // {connected, channel} from /api/youtube/status
 
+    // Slot for the i-th clip: day offset from the start day and the time.
     const schedule = useMemo(() => {
         if (!clips) return [];
+        const [early, late] = [time, time2].sort();
         return clips.map((clip, i) => {
+            let dayStep = i;
+            let slotTime = time;
+            if (cadence === 'twice') { dayStep = Math.floor(i / 2); slotTime = i % 2 === 0 ? early : late; }
+            else if (cadence === 'every2') dayStep = i * 2;
+            else if (cadence === 'weekly') dayStep = i * 7;
             const date = new Date();
-            date.setDate(date.getDate() + startOffset + i);
+            date.setDate(date.getDate() + startOffset + dayStep);
             date.setHours(0, 0, 0, 0);
-            return { clip, index: i, date };
+            return { clip, index: i, date, time: slotTime };
         });
-    }, [clips, startOffset]);
+    }, [clips, startOffset, cadence, time, time2]);
 
     const [scheduling, setScheduling] = useState(false);
     const [progress, setProgress] = useState({ current: 0, total: 0, results: [] });
     const [done, setDone] = useState(false);
 
-    // Reset state when modal reopens
+    // Reset state and check the YouTube connection when the modal opens.
     const prevOpen = React.useRef(false);
     React.useEffect(() => {
         if (isOpen && !prevOpen.current) {
             setScheduling(false);
             setDone(false);
             setProgress({ current: 0, total: 0, results: [] });
+            setYt(null);
+            apiFetch('/api/youtube/status').then((r) => r.json()).then(setYt)
+                .catch(() => setYt({ connected: false, error: 'backend unreachable' }));
         }
         prevOpen.current = isOpen;
     }, [isOpen]);
 
     if (!isOpen) return null;
 
-    const selectedPlatforms = Object.keys(platforms).filter(k => platforms[k]);
+    const selectedPlatforms = ['youtube'];
+    const canPost = !!yt?.connected;
 
-    // Managed (cloud plan/trial) users post with the server-side key — no BYOK needed
-    const canPost = isManaged || (uploadPostKey && uploadUserId);
-
+    // One clip a day, uploaded in order. Clips already on YouTube are skipped
+    // server-side; the daily API quota, when hit, stops the run cleanly and
+    // the rest can be scheduled tomorrow with the same button.
     const handleScheduleAll = async () => {
         if (!canPost) return;
-        if (selectedPlatforms.length === 0) return;
-
         setScheduling(true);
         setDone(false);
         const total = schedule.length;
         setProgress({ current: 0, total, results: [] });
 
         const results = [];
+        let quotaHit = false;
         for (let i = 0; i < schedule.length; i++) {
-            const { clip, index, date } = schedule[i];
-
-            // Build local datetime string: "2026-04-06T12:00:00"
-            // Upload-Post accepts this + timezone IANA parameter
+            const { index, date, time: slotTime } = schedule[i];
+            if (quotaHit) {
+                results.push({ index: i, success: false, error: 'daily quota reached', quota: true });
+                setProgress({ current: i + 1, total, results: [...results] });
+                continue;
+            }
             const pad = (n) => String(n).padStart(2, '0');
-            const scheduledDate = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${time}:00`;
-
-            const payload = {
-                job_id: jobId,
-                clip_index: index,
-                api_key: uploadPostKey,
-                user_id: uploadUserId,
-                platforms: selectedPlatforms,
-                title: clip.video_title_for_youtube_short || 'Viral Short',
-                description: clip.video_description_for_instagram || clip.video_description_for_tiktok || '',
-                scheduled_date: scheduledDate,
-                timezone
-            };
-
+            const scheduledLocal = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${slotTime}`;
             try {
-                const res = await apiFetch('/api/social/post', {
+                const res = await apiFetch('/api/youtube/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({ job_id: jobId, clip_index: index, scheduled_local: scheduledLocal, timezone }),
                 });
-
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(errText);
+                const body = await res.json().catch(() => ({}));
+                if (res.status === 429) {
+                    quotaHit = true;
+                    results.push({ index: i, success: false, error: 'daily quota reached', quota: true });
+                } else if (!res.ok) {
+                    results.push({ index: i, success: false, error: body.detail || `HTTP ${res.status}` });
+                } else {
+                    results.push({ index: i, success: true, skipped: !!body.skipped, url: body.url, publishAt: body.publish_at });
                 }
-
-                results.push({ index: i, success: true });
             } catch (e) {
                 results.push({ index: i, success: false, error: e.message });
             }
-
             setProgress({ current: i + 1, total, results: [...results] });
         }
 
@@ -201,13 +210,13 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
                 </button>
             ) : (
                 <a
-                    href="https://app.upload-post.com/calendar"
+                    href="https://studio.youtube.com"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn-primary flex-1 no-underline"
                 >
                     <ExternalLink size={16} />
-                    view calendar
+                    open YouTube Studio
                 </a>
             )}
         </div>
@@ -222,26 +231,54 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
             size="md"
             footer={footer}
         >
-            <p className="readout mb-4">{clips?.length || 0} CLIPS · 1/DAY</p>
+            <p className="readout mb-4">{clips?.length || 0} CLIPS · {CADENCES.find((c) => c.value === cadence)?.label.toUpperCase()}</p>
 
-            {!canPost && (
+            <div className="mb-5">
+                <label className="eyebrow block mb-2">how often</label>
+                <SegmentedControl
+                    options={CADENCES.map((c) => ({ ...c, disabled: scheduling }))}
+                    value={cadence}
+                    onChange={setCadence}
+                    size="sm"
+                />
+            </div>
+
+            {yt && !yt.connected && (
                 <div className="mb-4 p-3 bg-warn/10 text-warn text-xs rounded-input flex items-start gap-2">
                     <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                    <div>Set your Upload-Post API key in Settings first.</div>
+                    <div>YouTube is not connected: {yt.error || 'no token in openshorts/youtube_auth'}.</div>
                 </div>
+            )}
+            {yt?.connected && (
+                <p className="text-xs text-muted mb-4">
+                    Posting to <span className="text-ink2">{yt.channel?.title}</span>
+                    {yt.channel?.handle ? ` (${yt.channel.handle})` : ''}. Each clip uploads now as private
+                    and goes public at its time.
+                </p>
             )}
 
             {/* Time + Timezone */}
             <div className="mb-5 grid grid-cols-2 gap-3">
                 <div>
-                    <label className="eyebrow block mb-2">time</label>
-                    <input
-                        type="time"
-                        value={time}
-                        onChange={(e) => setTime(e.target.value)}
-                        disabled={scheduling}
-                        className="input-field [color-scheme:dark]"
-                    />
+                    <label className="eyebrow block mb-2">{cadence === 'twice' ? 'times' : 'time'}</label>
+                    <div className="flex gap-2">
+                        <input
+                            type="time"
+                            value={time}
+                            onChange={(e) => setTime(e.target.value)}
+                            disabled={scheduling}
+                            className="input-field [color-scheme:dark]"
+                        />
+                        {cadence === 'twice' && (
+                            <input
+                                type="time"
+                                value={time2}
+                                onChange={(e) => setTime2(e.target.value)}
+                                disabled={scheduling}
+                                className="input-field [color-scheme:dark]"
+                            />
+                        )}
+                    </div>
                 </div>
                 <div>
                     <label className="eyebrow block mb-2">timezone</label>
@@ -288,7 +325,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
 
             {/* Calendar list */}
             <div className="mb-5 border-y border-rule divide-y divide-rule">
-                {schedule.map(({ clip, index, date }) => (
+                {schedule.map(({ clip, index, date, time: slotTime }) => (
                     <div key={index} className="flex items-center gap-3 py-2.5">
                         <div className="w-24 shrink-0">
                             <span className="readout">{getDayLabel(date)} · {formatDate(date)}</span>
@@ -299,16 +336,23 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
                                 {clip.video_title_for_youtube_short || 'Viral Short'}
                             </div>
                             <div className="readout mt-0.5 truncate">
-                                {time} · {TIMEZONES.find(t => t.value === timezone)?.label || timezone}
+                                {slotTime} · {TIMEZONES.find(t => t.value === timezone)?.label || timezone}
+                                {progress.results[index]?.skipped && ' · already on YouTube'}
+                                {progress.results[index]?.error && ` · ${progress.results[index].error}`}
                             </div>
                         </div>
 
                         <div className="shrink-0">
                             {progress.results[index]?.success === true && (
-                                <CheckCircle size={16} className="text-ok" />
+                                <a href={progress.results[index].url} target="_blank" rel="noopener noreferrer"
+                                    title={progress.results[index].skipped ? 'already on YouTube' : 'open on YouTube'}>
+                                    <CheckCircle size={16} className={progress.results[index].skipped ? 'text-muted' : 'text-ok'} />
+                                </a>
                             )}
                             {progress.results[index]?.success === false && (
-                                <AlertCircle size={16} className="text-danger" />
+                                <span title={progress.results[index].error}>
+                                    <AlertCircle size={16} className={progress.results[index].quota ? 'text-warn' : 'text-danger'} />
+                                </span>
                             )}
                             {scheduling && progress.current === index && (
                                 <Loader2 size={16} className="text-brass animate-spin" />
@@ -326,21 +370,23 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
                 <label className="eyebrow block mb-2">platforms</label>
                 <SegmentedControl
                     multi
-                    options={PLATFORM_OPTIONS.map(opt => ({ ...opt, disabled: scheduling }))}
+                    options={PLATFORM_OPTIONS.map(opt => ({ ...opt, disabled: opt.disabled || scheduling }))}
                     value={selectedPlatforms}
-                    onChange={(arr) => setPlatforms({
-                        tiktok: arr.includes('tiktok'),
-                        instagram: arr.includes('instagram'),
-                        youtube: arr.includes('youtube')
-                    })}
+                    onChange={() => {}}
                 />
+                <p className="readout normal-case mt-2">TikTok and Instagram aren't connected yet.</p>
             </div>
 
             {/* A whole week of tiktok posts is a whole week of silent drafts:
                 this modal writes no captions of its own either (it sends the
                 clip's generated title/description), and tiktok keeps none of
                 them on a draft. Say it before the button, not after. */}
-            {platforms.tiktok && !scheduling && !done && <TikTokDraftNotice />}
+            {!scheduling && !done && (
+                <p className="text-xs text-muted mb-4">
+                    If YouTube's daily API quota runs out mid-way, the rest are left unscheduled; press the
+                    button again tomorrow, and clips already on YouTube are skipped.
+                </p>
+            )}
 
             {/* Progress bar */}
             {(scheduling || done) && (
@@ -360,7 +406,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
                             {failCount === 0 ? (
                                 <span className="text-ok">all clips scheduled</span>
                             ) : (
-                                <span className="text-danger">{successCount} scheduled, {failCount} failed</span>
+                                <span className="text-danger">{successCount} scheduled, {failCount} not scheduled (hover the icons)</span>
                             )}
                         </div>
                     )}

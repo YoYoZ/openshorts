@@ -37,8 +37,12 @@ import media_auth
 load_dotenv()
 
 # Constants
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "output"
+# Where projects live. The desktop app sets these from its folder settings;
+# unset, they stay relative to the working directory as before.
+UPLOAD_DIR = os.environ.get("OPENSHORTS_UPLOAD_DIR") or "uploads"
+OUTPUT_DIR = os.environ.get("OPENSHORTS_OUTPUT_DIR") or "output"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -92,12 +96,38 @@ CHILD_ENV_DENYLIST = frozenset({
 })
 
 
+LOCAL_SETTINGS_PATH = os.environ.get("LOCAL_SETTINGS_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "local_settings.json")
+TRANSCRIBE_MODES = ("auto", "groq", "whisper")
+
+
+def read_local_settings():
+    """Settings changed from the dashboard (self-host), applied to every new job."""
+    try:
+        with open(LOCAL_SETTINGS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def child_env(base=None):
     """A copy of the environment for a pipeline subprocess, minus the server
     secrets in CHILD_ENV_DENYLIST. Callers add GEMINI_API_KEY themselves."""
     env = dict(os.environ if base is None else base)
     for name in CHILD_ENV_DENYLIST:
         env.pop(name, None)
+    settings = read_local_settings()
+    mode = settings.get("transcribe_backend")
+    if mode in TRANSCRIBE_MODES:
+        env["TRANSCRIBE_BACKEND"] = mode
+    # Hook look saved with "apply to all clips": new jobs' auto-hooks use it.
+    hook = settings.get("hook_defaults") or {}
+    for key, var in (("style", "AUTO_HOOK_STYLE"), ("font", "AUTO_HOOK_FONT"),
+                     ("scale", "AUTO_HOOK_SCALE"), ("position", "AUTO_HOOK_POSITION"),
+                     ("duration_seconds", "AUTO_HOOK_SECONDS")):
+        if hook.get(key) not in (None, ""):
+            env[var] = str(hook[key])
     return env
 
 
@@ -967,7 +997,8 @@ def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
             highlight_color=s["highlight_color"], bg_color=s["bg_color"],
             bg_opacity=s["bg_opacity"], effect=s["effect"],
             base_opacity=s["base_opacity"], uppercase=s["uppercase"],
-            reveal=s["reveal"], shadow=s["shadow"])
+            reveal=s["reveal"], shadow=s["shadow"],
+            frame_aspect=frame_aspect_of(video_path))
         if max_chars is not None:
             opts["max_chars"] = max_chars
         if max_duration is not None:
@@ -1927,6 +1958,8 @@ def is_transient_failure(logs) -> bool:
 
 
 def _should_auto_retry(job) -> bool:
+    if job and job.get("cancelled"):
+        return False
     return bool(job and job.get('status') == 'failed' and not _draining
                 and int(job.get('auto_retries') or 0) < AUTO_RETRY_LIMIT
                 and job.get('cmd') and is_transient_failure(job.get('logs')))
@@ -2526,12 +2559,15 @@ class _TimedLog(list):
         self.times.extend([time.time()] * len(lines))
 
 
-def _visible_logs_timed(logs):
-    """(lines, times) to surface to the client; see _visible_logs."""
+def _visible_logs_timed(logs, raw=False):
+    """(lines, times) to surface to the client; see _visible_logs.
+
+    The curated view is the default everywhere now; ``raw`` (the dashboard's
+    "raw log" toggle, ?raw=1) returns every line the pipeline printed."""
     times = getattr(logs, "times", None)
     if times is not None and len(times) != len(logs):
         times = None
-    if not BILLING_ENABLED or DEBUG_LOGS:
+    if raw or DEBUG_LOGS:
         return list(logs), list(times) if times is not None else None
     from log_view import friendly_logs_timed
     pairs = friendly_logs_timed(logs, times)
@@ -2556,12 +2592,49 @@ def _visible_logs(logs):
     return friendly_logs(logs)
 
 
+_LOG_NOISE = re.compile(
+    r"^\[download\]\s+[\d.]+% of"          # yt-dlp progress redraws
+    r"|^\[debug\]"                         # yt-dlp verbose dump
+    r"|TensorFlow Lite|absl::InitializeLog|inference_feedback_manager"
+    r"|^W0000 |^I0000 "                    # mediapipe/TF glog lines
+    r"|huggingface_hub.*symlinks|To support symlinks on Windows|^warnings\.warn\("
+    r"|unauthenticated requests to the HF Hub"
+    r"|Ultralytics Settings|yolo settings")
+
+
+def _is_log_noise(line):
+    """Library chatter that says nothing about the job."""
+    return bool(_LOG_NOISE.search(line))
+
+
 def enqueue_output(out, job_id):
     """Reads output from a subprocess and appends it to jobs logs."""
     try:
-        for line in iter(out.readline, b''):
-            decoded_line = _scrub_secrets(line.decode('utf-8').strip())
+        # newline='' splits on \r as well as \n: progress bars redraw with \r
+        # and no newline, so line-by-line reading used to hold a whole
+        # download back as one giant line until it finished.
+        import io
+        reader = io.TextIOWrapper(out, encoding='utf-8', errors='replace', newline='')
+        for line in iter(reader.readline, ''):
+            decoded_line = _scrub_secrets(line.strip())
             if decoded_line:
+                # Structured progress (progress_events.py): drives the
+                # dashboard's progress bars, never shown as a log line.
+                if decoded_line.startswith("PROGRESS "):
+                    try:
+                        ev = json.loads(decoded_line[9:])
+                        stage = ev.pop("stage")
+                        if job_id in jobs:
+                            prog = jobs[job_id].setdefault('progress', {})
+                            prev = prog.get(stage, {})
+                            ev.setdefault('started', prev.get('started', time.time()))
+                            ev['updated'] = time.time()
+                            prog[stage] = {**prev, **ev}
+                    except Exception:
+                        pass
+                    continue
+                if _is_log_noise(decoded_line):
+                    continue
                 # Internal marker from main.py's downloader, not a log line.
                 # Internal marker: a clip finished its whole chain and this is
                 # the file to serve for it. Consumed here like PROXY_BYTES so it
@@ -2600,8 +2673,15 @@ def enqueue_output(out, job_id):
     finally:
         out.close()
 
+# Running job processes by job id, so /api/jobs/{id}/cancel can stop them.
+_job_procs = {}
+
+
 async def run_job(job_id, job_data):
     """Executes the subprocess for a specific job."""
+    if jobs[job_id].get('cancelled'):
+        jobs[job_id]['status'] = 'failed'
+        return
     
     cmd = job_data['cmd']
     env = job_data['env']
@@ -2620,6 +2700,7 @@ async def run_job(job_id, job_data):
             cwd=os.getcwd()
         )
         
+        _job_procs[job_id] = process
         # We need to capture logs in a thread because Popen isn't async
         t_log = threading.Thread(target=enqueue_output, args=(process.stdout, job_id))
         t_log.daemon = True
@@ -2685,6 +2766,7 @@ async def run_job(job_id, job_data):
                 pass
 
         returncode = process.returncode
+        _job_procs.pop(job_id, None)
         
         if returncode == 0:
             jobs[job_id]['status'] = 'completed'
@@ -3169,7 +3251,9 @@ async def process_endpoint(
     # outside Docker is whatever interpreter happens to be first — not the venv
     # running this server. Every job then dies on `import cv2`. The quality
     # probe above already gets this right.
-    cmd = [sys.executable, "-u", "main.py"] # -u for unbuffered
+    # Absolute: the desktop app runs the server from a writable work folder,
+    # not from the source folder.
+    cmd = [sys.executable, "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")]
     env = child_env()
     if not paid_allowed:
         # Daily paid-proxy budget hit: this job runs on the free routes only.
@@ -3448,6 +3532,347 @@ def _presented_status(job_id, job):
     return job['status']
 
 
+_UUID_DIR = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_DERIVED_VIDEO = re.compile(r"(_clip_\d+|^hooked_|^subtitled_|^recut_|^temp_|^wm_|^\.)")
+
+
+def _project_title(job_path, meta_path, job):
+    """Best human name for a job: the source video's title from the files on
+    disk, else the URL it was started from."""
+    if meta_path:
+        return os.path.basename(meta_path)[:-len("_metadata.json")].replace("_", " ")
+    sources = [f for f in os.listdir(job_path)
+               if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
+               and not _DERIVED_VIDEO.search(f)]
+    if sources:
+        return os.path.splitext(sources[0])[0].replace("_", " ")
+    cmd = (job or {}).get('cmd') or []
+    if "-u" in cmd:
+        return cmd[cmd.index("-u") + 1]
+    return None
+
+
+class LocalSettingsUpdate(BaseModel):
+    transcribe_backend: Optional[str] = None
+    # {style, font, scale, position, duration_seconds} for new jobs' auto-hooks
+    hook_defaults: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/local/settings")
+async def get_local_settings():
+    current = read_local_settings()
+    return {
+        "transcribe_backend": current.get("transcribe_backend")
+                              or os.environ.get("TRANSCRIBE_BACKEND", "whisper"),
+        "groq_key_set": bool(os.environ.get("GROQ_API_KEY", "").strip()),
+        "hook_defaults": current.get("hook_defaults"),
+    }
+
+
+@app.put("/api/local/settings")
+async def put_local_settings(update: LocalSettingsUpdate):
+    current = read_local_settings()
+    if update.transcribe_backend is not None:
+        if update.transcribe_backend not in TRANSCRIBE_MODES:
+            raise HTTPException(status_code=400, detail=f"transcribe_backend must be one of {TRANSCRIBE_MODES}")
+        current["transcribe_backend"] = update.transcribe_backend
+    if update.hook_defaults is not None:
+        allowed = ("style", "font", "scale", "position", "duration_seconds")
+        current["hook_defaults"] = {k: v for k, v in update.hook_defaults.items() if k in allowed}
+    with open(LOCAL_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2)
+    return await get_local_settings()
+
+
+# --- Direct YouTube upload (youtube_upload.py, token in youtube_auth/) -------
+
+class YouTubeUploadRequest(BaseModel):
+    job_id: str
+    clip_index: int
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    # Local wall time "YYYY-MM-DDTHH:MM" in ``timezone``; None = no schedule.
+    scheduled_local: Optional[str] = None
+    timezone: Optional[str] = "UTC"
+    privacy: Optional[str] = "private"   # used only when not scheduled
+    force: Optional[bool] = False         # upload again even if already uploaded
+
+
+@app.get("/api/youtube/status")
+async def youtube_status():
+    import youtube_upload
+    try:
+        ch = await asyncio.to_thread(youtube_upload.channel)
+        return {"connected": True, "channel": ch}
+    except Exception as e:
+        return {"connected": False, "error": str(e)[:300]}
+
+
+def _clip_metadata(job_id):
+    metas = glob.glob(os.path.join(glob.escape(os.path.join(OUTPUT_DIR, job_id)), "*_metadata.json"))
+    if not metas:
+        raise HTTPException(status_code=404, detail="Project metadata not found")
+    with open(metas[0], encoding="utf-8") as f:
+        return metas[0], json.load(f)
+
+
+@app.post("/api/youtube/upload")
+async def youtube_upload_clip(req: YouTubeUploadRequest):
+    import urllib.parse
+    import youtube_upload
+    from datetime import datetime, timezone as dt_tz
+    from zoneinfo import ZoneInfo
+    if not _UUID_DIR.match(req.job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    meta_path, data = _clip_metadata(req.job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= req.clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    clip = clips[req.clip_index]
+    previous = clip.get("youtube") or {}
+    if previous.get("video_id") and not req.force:
+        return {"skipped": True, **previous}
+
+    # The file the dashboard plays for this clip: its latest render.
+    name = os.path.basename(urllib.parse.unquote(str(clip.get("video_url") or "").split("?")[0]))
+    path = os.path.join(OUTPUT_DIR, req.job_id, name)
+    if not name or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Rendered clip file not found")
+
+    publish_at = None
+    if req.scheduled_local:
+        try:
+            local = datetime.fromisoformat(req.scheduled_local).replace(tzinfo=ZoneInfo(req.timezone or "UTC"))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Bad schedule: {e}")
+        utc = local.astimezone(dt_tz.utc)
+        if utc.timestamp() < time.time() + 120:
+            raise HTTPException(status_code=400, detail="Scheduled time is in the past")
+        publish_at = utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    title = (req.title or clip.get("video_title_for_youtube_short") or "Short").strip()
+    description = req.description
+    if description is None:
+        description = (clip.get("video_description_for_tiktok")
+                       or clip.get("video_description_for_instagram") or "").strip()
+        if data.get("source_url"):
+            description += f"\n\nПовне відео: {data['source_url']}"
+        description += "\n\n#Shorts"
+    tags = req.tags
+    if tags is None:
+        tags = re.findall(r"#(\w+)", description.replace("#Shorts", ""))[:15]
+    language = (data.get("transcript") or {}).get("language")
+
+    try:
+        with render_ops.op(req.job_id, req.clip_index, "uploading to YouTube"):
+            ops_update = lambda pct: render_ops._update(req.job_id, pct=round(pct, 1))
+            video = await asyncio.to_thread(
+                youtube_upload.upload, path, title, description, tags, publish_at,
+                req.privacy or "private", "28", language, ops_update)
+    except youtube_upload.QuotaExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except youtube_upload.NotConnected as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+    record = {"video_id": video.get("id"), "url": f"https://youtu.be/{video.get('id')}",
+              "publish_at": publish_at, "privacy": (video.get("status") or {}).get("privacyStatus"),
+              "uploaded_at": int(time.time()), "file": name}
+    # Re-read before writing: another request may have touched the metadata.
+    meta_path, data = _clip_metadata(req.job_id)
+    data["shorts"][req.clip_index]["youtube"] = record
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)  # ASCII-escaped: other readers open it without an encoding
+    job = jobs.get(req.job_id)
+    if job and (job.get("result") or {}).get("clips") and req.clip_index < len(job["result"]["clips"]):
+        job["result"]["clips"][req.clip_index]["youtube"] = record
+    return record
+
+
+class ClipDoneRequest(BaseModel):
+    done: bool = True
+
+
+@app.post("/api/clip/{job_id}/{clip_index}/done")
+async def set_clip_done(job_id: str, clip_index: int, req: ClipDoneRequest):
+    """Mark a clip as finished editing (the green OK on its card)."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    meta_path, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    clips[clip_index]["done"] = bool(req.done)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    job = jobs.get(job_id)
+    mem = (job or {}).get("result", {}).get("clips") or []
+    if clip_index < len(mem):
+        mem[clip_index]["done"] = bool(req.done)
+    return {"done": bool(req.done)}
+
+
+@app.get("/api/local/projects")
+async def local_projects():
+    """Every job in OUTPUT_DIR, newest first, for the sidebar's project list."""
+    out = []
+    try:
+        names = os.listdir(OUTPUT_DIR)
+    except OSError:
+        names = []
+    for job_id in names:
+        job_path = os.path.join(OUTPUT_DIR, job_id)
+        if not _UUID_DIR.match(job_id) or not os.path.isdir(job_path):
+            continue
+        metas = glob.glob(os.path.join(glob.escape(job_path), "*_metadata.json"))
+        meta_path = metas[0] if metas else None
+        job = jobs.get(job_id)
+        clip_count = None
+        cost = None
+        if meta_path:
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                clip_count = len(data.get("shorts") or [])
+                cost = (data.get("cost_analysis") or {}).get("total_cost")
+            except Exception:
+                pass
+        if job:
+            status = job.get('status')
+        else:
+            status = 'completed' if meta_path else 'incomplete'
+        if job and job.get('cancelled'):
+            status = 'cancelled'
+        try:
+            created = os.path.getctime(job_path)
+        except OSError:
+            created = None
+        out.append({
+            "job_id": job_id,
+            "title": _project_title(job_path, meta_path, job) or f"project {job_id[:8]}",
+            "status": status,
+            "created": created,
+            "clips": clip_count,
+            "cost": cost,
+            "progress": (job or {}).get('progress'),
+        })
+    out.sort(key=lambda p: p["created"] or 0, reverse=True)
+    return out[:100]
+
+
+@app.delete("/api/local/projects/{job_id}")
+async def delete_local_project(job_id: str):
+    """Delete a project: its output folder (source, clips, metadata) and any
+    uploaded source. A running job must be stopped first."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    job = jobs.get(job_id)
+    proc = _job_procs.get(job_id)
+    if (job and job.get('status') in ('processing', 'queued') and not job.get('cancelled'))             or (proc is not None and proc.poll() is None):
+        raise HTTPException(status_code=409, detail="Stop the job before deleting it")
+    import shutil
+    job_path = os.path.join(OUTPUT_DIR, job_id)
+    if os.path.isdir(job_path):
+        shutil.rmtree(job_path, ignore_errors=True)
+    for f in glob.glob(os.path.join(UPLOAD_DIR, f"{glob.escape(job_id)}_*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    jobs.pop(job_id, None)
+    return {"deleted": not os.path.exists(job_path)}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Stop a queued or running job: kill its process tree (main.py and every
+    ffmpeg it started) and keep it from resuming on the next start."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job['cancelled'] = True
+    job['logs'].append("⛔ Cancelled by user.")
+    killed = 0
+    proc = _job_procs.pop(job_id, None)
+    if proc is not None and proc.poll() is None:
+        import psutil
+        try:
+            parent = psutil.Process(proc.pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.kill()
+                    killed += 1
+                except psutil.Error:
+                    pass
+            parent.kill()
+            killed += 1
+        except psutil.Error:
+            pass
+    if job.get('status') == 'queued':
+        job['status'] = 'failed'
+    try:
+        _clear_resume_manifest(job_id)
+    except Exception:
+        pass
+    return {"cancelled": True, "killed_processes": killed}
+
+
+import functools
+import render_ops
+
+
+def _tracked(kind):
+    """Report this endpoint's re-render of req.clip_index to /api/clip-ops."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            req = kwargs.get('req')
+            if req is None or getattr(req, 'job_id', None) is None:
+                return await fn(*args, **kwargs)
+            with render_ops.op(req.job_id, req.clip_index, kind):
+                return await fn(*args, **kwargs)
+        return wrapper
+    return deco
+
+
+@app.get("/api/clip-ops/{job_id}")
+async def clip_ops(job_id: str):
+    """Re-renders in flight for this job: {clip_index: {kind, pct, step, started}}."""
+    return render_ops.snapshot(job_id)
+
+
+_system_cache = {"t": 0.0, "data": None}
+
+
+@app.get("/api/system")
+async def system_load():
+    """CPU / RAM / GPU load for the dashboard's progress panel (cached 1 s)."""
+    now = time.time()
+    if _system_cache["data"] and now - _system_cache["t"] < 1.0:
+        return _system_cache["data"]
+    import psutil
+    vm = psutil.virtual_memory()
+    data = {"cpu": psutil.cpu_percent(interval=None),
+            "ram_used": vm.used, "ram_total": vm.total, "gpu": None}
+    try:
+        out = await asyncio.to_thread(
+            subprocess.run,
+            ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,utilization.encoder",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            name, util, used, total, enc = [p.strip() for p in out.stdout.strip().splitlines()[0].split(",")]
+            data["gpu"] = {"name": name, "util": float(util), "mem_used": float(used),
+                           "mem_total": float(total),
+                           "encoder": float(enc) if enc.replace(".", "").isdigit() else None}
+    except Exception:
+        pass
+    _system_cache.update(t=now, data=data)
+    return data
+
+
 @app.get("/api/status/{job_id}")
 async def get_status(job_id: str, request: Request):
     job = jobs.get(job_id)
@@ -3457,9 +3882,12 @@ async def get_status(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Job not found")
 
     await _assert_job_owner(request, job)
-    _logs_view = _visible_logs_timed(job['logs'])
+    _logs_view = _visible_logs_timed(job['logs'], raw=request.query_params.get("raw") == "1")
     return {
         "status": _presented_status(job_id, job),
+        # Per-stage progress from progress_events (download, transcribe,
+        # select, render): {stage: {pct, detail, done, total, eta, started, updated}}
+        "progress": job.get('progress'),
         "logs": _logs_view[0],
         # When each line arrived (epoch seconds, parallel to "logs"), or None.
         "log_times": _logs_view[1],
@@ -3831,7 +4259,7 @@ async def _ensure_job_files(job_id: str, request: Request) -> bool:
 
 
 from editor import VideoEditor
-from subtitles import generate_srt, generate_ass, burn_subtitles, generate_srt_from_video, CAPTION_PRESETS
+from subtitles import generate_srt, generate_ass, burn_subtitles, generate_srt_from_video, CAPTION_PRESETS, frame_aspect_of
 from hooks import add_hook_to_video
 from translate import translate_video, get_supported_languages
 from thumbnail import (analyze_video_for_titles, refine_titles, generate_thumbnail,
@@ -3844,6 +4272,7 @@ class EditRequest(BaseModel):
     input_filename: Optional[str] = None
 
 @app.post("/api/edit")
+@_tracked("auto edit")
 async def edit_clip(
     req: EditRequest,
     request: Request,
@@ -4027,7 +4456,7 @@ class SubtitleRequest(BaseModel):
     job_id: str
     clip_index: int
     position: str = "bottom" # top, middle, bottom
-    font_size: int = 16
+    font_size: float = 16  # the editor slider sends fractional sizes
     font_name: str = "Verdana"
     font_color: str = "#FFFFFF"
     border_color: str = "#000000"
@@ -4053,6 +4482,10 @@ class SubtitleRequest(BaseModel):
     # instead of regenerating from the stored transcript — without this, text
     # edits in the modal were silently discarded on the server render path.
     words: Optional[List[CaptionWordIn]] = None
+    # True drops the clip's saved text edits (the editor's text is back to the
+    # transcript). Without words and without this, saved edits are kept: a
+    # restyle of every clip must not wipe the text edits made on each.
+    reset_words: Optional[bool] = False
 
 
 @app.get("/api/clip/{job_id}/{clip_index}/transcript")
@@ -4093,10 +4526,15 @@ async def get_clip_transcript(job_id: str, clip_index: int, request: Request):
         clip_end = clip_data.get('end', 0)
 
     # Extract words within clip range and convert to CaptionWord format
+    from subtitles import fix_word_overlaps
+    all_words = fix_word_overlaps(
+        [w for segment in transcript.get('segments', []) for w in segment.get('words', [])])
     captions = []
-    for segment in transcript.get('segments', []):
-        for word_info in segment.get('words', []):
-            if word_info['end'] > clip_start and word_info['start'] < clip_end:
+    for word_info in all_words:
+            # A word belongs to the clip when its middle is inside it; any
+            # overlap pulled in a word the cut had already sliced off.
+            mid = (word_info['start'] + word_info['end']) / 2
+            if clip_start <= mid < clip_end:
                 captions.append({
                     "text": word_info.get('word', '').strip(),
                     "startMs": int((max(0, word_info['start'] - clip_start)) * 1000),
@@ -4105,10 +4543,21 @@ async def get_clip_transcript(job_id: str, clip_index: int, request: Request):
 
     duration_sec = clip_end - clip_start
 
+    # What was last applied to this clip, so the subtitle editor reopens on
+    # it instead of on the defaults: the style, and the edited words if any
+    # (already clip-relative seconds, see /api/subtitle).
+    edited = [
+        {"text": str(w.get('word', '')).strip(),
+         "startMs": int(float(w['start']) * 1000), "endMs": int(float(w['end']) * 1000)}
+        for w in (clip_data.get('caption_words') or [])
+        if str(w.get('word', '')).strip()
+    ]
     return {
         "captions": captions,
         "durationSec": duration_sec,
         "language": transcript.get('language', 'en'),
+        "captionStyle": clip_data.get('caption_style'),
+        "editedCaptions": edited or None,
     }
 
 
@@ -4257,6 +4706,7 @@ _scenes_locks: Dict[str, asyncio.Lock] = {}
 
 
 @app.post("/api/clip/rerender")
+@_tracked("re-rendering")
 async def rerender_clip(req: RerenderRequest, request: Request):
     """Re-render a clip from an edited EDL (the clip editor's save button).
 
@@ -4635,6 +5085,7 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request):
 
 
 @app.post("/api/clip/reframe")
+@_tracked("reframing")
 async def reframe_clip(req: ReframeRequest, request: Request):
     """Re-render a clip with hand-framed scenes, leaving its cut untouched.
 
@@ -4965,6 +5416,7 @@ async def generate_effects_config(
 
 
 @app.post("/api/subtitle")
+@_tracked("burning subtitles")
 async def add_subtitles(req: SubtitleRequest, request: Request):
     if req.preset:
         preset = CAPTION_PRESETS.get(req.preset.strip().lower())
@@ -5035,6 +5487,12 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
                 edited, (transcript or {}).get("language", "en"))
             sub_start, sub_end = 0.0, sub_transcript["segments"][0]["end"]
             caption_words = sub_transcript["segments"][0]["words"]
+    elif not req.reset_words and clip_data.get('caption_words'):
+        # Restyle only: burn the text edits this clip already has.
+        sub_transcript = _words_transcript(
+            clip_data['caption_words'], (transcript or {}).get("language", "en"))
+        sub_start, sub_end = 0.0, sub_transcript["segments"][0]["end"]
+        caption_words = sub_transcript["segments"][0]["words"]
 
     # Video Path
     if req.input_filename:
@@ -5196,6 +5654,7 @@ class RemoveSubtitlesRequest(BaseModel):
 
 
 @app.post("/api/subtitle/remove")
+@_tracked("removing subtitles")
 async def remove_subtitles(req: RemoveSubtitlesRequest, request: Request):
     """Point a clip back at its un-captioned original.
 
@@ -5260,13 +5719,16 @@ class HookRequest(BaseModel):
     # auto (off the faces and the captions, hooks/hook_placement), or an
     # explicit top / center / bottom, which is drawn exactly there.
     position: Optional[str] = "auto"
-    size: Optional[str] = "M" # S, M, L
+    size: Optional[str] = "M" # S, M, L (legacy presets)
+    # Exact size multiplier from the editor's slider; wins over ``size``.
+    scale: Optional[float] = None
     duration_seconds: Optional[float] = None  # None = hook visible for the whole clip
     style: Optional[str] = "pill"  # pill/classic/dark/yellow/red/outline/outline_yellow
     font: Optional[str] = None  # montserrat/anton/serif (hooks.HOOK_FONTS); None = the style's own
     remove: Optional[bool] = False  # strip the burned hook instead of adding one
 
 @app.post("/api/hook")
+@_tracked("adding hook")
 async def add_hook(req: HookRequest, request: Request):
     await require_managed_entitlement(request)
     await _ensure_job_files(req.job_id, request)
@@ -5329,7 +5791,8 @@ async def add_hook(req: HookRequest, request: Request):
 
         # Map Size to Scale
         size_map = {"S": 0.8, "M": 1.0, "L": 1.3}
-        font_scale = size_map.get(req.size, 1.0)
+        font_scale = (max(0.4, min(2.5, float(req.scale))) if req.scale
+                      else size_map.get(req.size, 1.0))
 
         # Meter the FFmpeg overlay re-encode (no-op for BYOK / self-host).
         hook_minutes = _cloud_config.HOOK_MINUTES if BILLING_ENABLED else 0

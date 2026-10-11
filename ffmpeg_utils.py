@@ -31,16 +31,20 @@ _X264_ARGS = {
 # -pix_fmt yuv420p is REQUIRED: with RGB input (the bgr24 rawvideo pipe from
 # OpenCV) nvenc otherwise emits H.264 in gbrp/GBR colorspace, which ffmpeg
 # reads fine but web players render as a magenta/green mess.
+# -bf 0 is REQUIRED too: with B-frames, the 2023 ffmpeg nvenc wrapper offsets
+# every DTS by the seek point of an input-seeked cut (-ss 130 -> DTS starts at
+# -125 s). Browsers cope; Windows' players show one frozen frame with the
+# audio running. No B-frames means DTS == PTS, so nothing can drift.
 _NVENC_ARGS = {
     QUALITY: ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
               "-rc", "vbr", "-cq", "25", "-b:v", "0",
-              "-spatial-aq", "1", "-temporal-aq", "1", "-pix_fmt", "yuv420p"],
+              "-spatial-aq", "1", "-temporal-aq", "1", "-bf", "0", "-pix_fmt", "yuv420p"],
     QUALITY_FAST: ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
                    "-rc", "vbr", "-cq", "25", "-b:v", "0", "-spatial-aq", "1",
-                   "-pix_fmt", "yuv420p"],
+                   "-bf", "0", "-pix_fmt", "yuv420p"],
     DELIVERY: ["-c:v", "h264_nvenc", "-preset", "p4",
                "-rc", "vbr", "-cq", "29", "-b:v", "0", "-spatial-aq", "1",
-               "-pix_fmt", "yuv420p"],
+               "-bf", "0", "-pix_fmt", "yuv420p"],
 }
 
 # Output args that drop container/stream metadata carried over from the source

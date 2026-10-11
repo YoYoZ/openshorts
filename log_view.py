@@ -43,6 +43,10 @@ _RULES = [
     (re.compile(r'Processing Clip (\d+)'), '🎬 Creating clip {0}…', None),
     (re.compile(r'Clip (\d+) framed'), '🎞️ Clip {0} framed', None),
     (re.compile(r'Clip (\d+) ready'), '✅ Clip {0} ready', None),
+    # Self-host additions: what went wrong, what it cost, what was heard.
+    (re.compile(r"Detected language '(\w+)'"), '🌐 Language: {0}', None),
+    (re.compile(r'💰 Total cost'), None, None),
+    (re.compile(r'^(?:WARNING|ERROR):|⚠️|❌|Traceback|\w+(?:Error|Exception):'), None, None),
 ]
 
 

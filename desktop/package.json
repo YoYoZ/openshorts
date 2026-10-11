@@ -1,0 +1,45 @@
+{
+  "name": "autoshortscut",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AutoShortsCut: long videos to Shorts, locally",
+  "author": "YoYoZ",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.autoshortscut.app",
+    "productName": "AutoShortsCut",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "runtime.js", "icon.png", "package.json"],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "app-src",
+        "filter": [
+          "*.py",
+          "requirements*.txt",
+          "alembic.ini",
+          "fonts/**",
+          "assets/**",
+          "cloud/**",
+          "alembic/**",
+          "dashboard/dist/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      }
+    ],
+    "win": { "target": ["nsis"], "icon": "icon.ico" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
+    "linux": { "target": ["AppImage"], "category": "AudioVideo", "icon": "icon-512.png" },
+    "mac": { "target": ["dmg"], "category": "public.app-category.video", "icon": "icon-512.png" }
+  }
+}

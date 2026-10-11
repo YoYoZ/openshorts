@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Loader2, Star } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { track } from '../lib/analytics';
+import { track } from '../lib/events';
 import Modal from './ui/Modal';
 
 // Mirrors cloud/cancellation.CANCEL_REASONS. A closed list so churn can be

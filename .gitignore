@@ -49,3 +49,12 @@ skills-lock.json
 
 # Instrucciones locales con datos de infra (repo público)
 CLAUDE.local.md
+
+# YouTube OAuth client + token (secrets)
+youtube_auth/
+
+# Desktop app
+local_settings.json
+desktop/node_modules/
+desktop/dist/
+*.bak-before-*

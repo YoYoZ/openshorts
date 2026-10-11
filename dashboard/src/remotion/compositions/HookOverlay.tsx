@@ -75,7 +75,8 @@ interface HookBoxProps {
 const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const scale = SIZE_SCALE[config.size] ?? 1.0;
+  // A number is the editor slider's exact multiplier; S/M/L are old presets.
+  const scale = typeof config.size === "number" ? config.size : (SIZE_SCALE[config.size as string] ?? 1.0);
 
   // Entrance animation
   let animOpacity = 1;
@@ -129,7 +130,7 @@ const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
 
   // Typeface and size as hooks.py: the chosen font, else the style's own;
   // font size = factor x the 90%-of-width box.
-  const typeface = HOOK_FONTS[config.font ?? (look.pills ? "montserrat" : "serif")] ?? HOOK_FONTS.serif;
+  const typeface = HOOK_FONTS[config.font ?? "montserrat"] ?? HOOK_FONTS.montserrat;
   const fontSize = Math.round(1080 * 0.9 * typeface.factor * scale);
   const outlinePx = Math.round(look.outlinePx * scale);
 
@@ -168,6 +169,7 @@ const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
               WebkitBoxDecorationBreak: "clone",
               boxDecorationBreak: "clone",
               wordBreak: "break-word",
+              textWrap: "balance",
             }}
           >
             {config.text}
@@ -208,6 +210,7 @@ const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
             color: look.text,
             lineHeight: 1.4,
             wordBreak: "break-word",
+            textWrap: "balance",
             ...(outlinePx > 0
               ? {
                   WebkitTextStroke: `${outlinePx}px #000000`,

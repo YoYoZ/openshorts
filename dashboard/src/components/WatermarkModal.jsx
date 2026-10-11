@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Modal from './ui/Modal';
 import { apiJson } from '../lib/api';
-import { track } from '../lib/analytics';
+import { track } from '../lib/events';
 
 const DISMISS_KEY = 'os_watermark_notice_dismissed';
 const SEEN_PREFIX = 'os_watermark_noticed_';

@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import subprocess
+import render_ops
 import time
 import uuid
 
@@ -136,8 +137,9 @@ def transcript_words(transcript):
                 })
             except (KeyError, TypeError, ValueError):
                 continue
-    words.sort(key=lambda w: w["s"])
-    return words
+    # Spoken order as stored; only the times are made monotonic.
+    from subtitles import fix_word_overlaps
+    return fix_word_overlaps(words, start="s", end="e")
 
 
 def virtual_transcript(transcript, segments):
@@ -251,7 +253,7 @@ FFMPEG_TIMEOUT_SECONDS = 1800
 
 def _run_ffmpeg(command):
     try:
-        result = subprocess.run(
+        result = render_ops.run(
             command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             timeout=FFMPEG_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:

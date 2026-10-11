@@ -19,6 +19,7 @@ so they stay unit-testable in CI.
 """
 import os
 import subprocess
+import render_ops
 import tempfile
 
 import active_speaker
@@ -336,7 +337,7 @@ def _analyze_trajectory(input_video, scenes_boundaries, scene_strategies,
 # --- render -----------------------------------------------------------------
 
 def _run(cmd):
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+    render_ops.run(cmd, check=True, stdout=subprocess.DEVNULL,
                    stderr=subprocess.PIPE, timeout=1800)
 
 

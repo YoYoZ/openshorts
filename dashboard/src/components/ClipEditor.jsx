@@ -192,12 +192,19 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                 setRenderedFraming(data.framing || 'auto');
                 setReapplyCaptions(true);
                 setPreviewUrl(getApiUrl(`/videos/${jobId}/${data.current_file}`));
+                // Open where the clip is: park the source monitor (and so the
+                // transcript, which follows it) on the clip's first word
+                // instead of 0:00 at the top of the whole video.
+                if (data.segments?.length) {
+                    setSourceTime(data.segments[0].start);
+                    seekSource(data.segments[0].start);
+                }
             } catch (e) {
                 if (!cancelled) setLoadError(e.detail || e.message || 'could not load the clip recipe');
             }
         })();
         return () => { cancelled = true; };
-    }, [jobId, clipIndex]);
+    }, [jobId, clipIndex, seekSource]);
 
     const words = useMemo(() => (edl?.words || []), [edl]);
     const sourceAvailable = !!edl?.source?.available;
