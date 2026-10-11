@@ -5,29 +5,54 @@ import { apiFetch } from '../lib/api';
 // Live progress of a server-side re-render of one clip (subtitles, hook,
 // recut, reframe, auto edit), from /api/clip-ops/{job} (render_ops.py).
 // Covers the clip preview while it runs; renders nothing otherwise.
+// One poll per project, shared by every card of it: ten cards each polling
+// /api/clip-ops on their own was ~5 requests a second for the same answer.
+const pollers = new Map();   // jobId -> { subs: Set<{clipIndex, fast, cb}>, timer }
+
+function subscribe(jobId, sub) {
+    let p = pollers.get(jobId);
+    if (!p) {
+        p = { subs: new Set(), timer: null };
+        pollers.set(jobId, p);
+        const tick = async () => {
+            let ops = {};
+            try {
+                const res = await apiFetch(`/api/clip-ops/${jobId}`);
+                if (res.ok) ops = await res.json();
+            } catch { /* keep polling */ }
+            if (pollers.get(jobId) !== p) return;
+            p.subs.forEach((s) => s.cb(ops[String(s.clipIndex)] || null));
+            // Fast while anything renders (or a card expects it to), slow otherwise.
+            const fast = Object.keys(ops).length > 0 || [...p.subs].some((s) => s.fast);
+            p.timer = setTimeout(tick, fast ? 700 : 2000);
+        };
+        tick();
+    }
+    p.subs.add(sub);
+    return () => {
+        p.subs.delete(sub);
+        if (p.subs.size === 0) {
+            clearTimeout(p.timer);
+            pollers.delete(jobId);
+        }
+    };
+}
+
 export default function RenderOverlay({ jobId, clipIndex, fallbackLabel, onBusyChange }) {
     const [op, setOp] = useState(null);
     const [now, setNow] = useState(() => Date.now() / 1000);
 
     useEffect(() => {
         if (!jobId) return undefined;
-        let alive = true;
-        let timer;
-        const tick = async () => {
-            let next = null;
-            try {
-                const res = await apiFetch(`/api/clip-ops/${jobId}`);
-                if (res.ok) next = (await res.json())[String(clipIndex)] || null;
-            } catch { /* keep polling */ }
-            if (!alive) return;
-            setOp(next);
-            onBusyChange?.(!!next);
-            setNow(Date.now() / 1000);
-            // Fast while something runs on this clip, slow otherwise.
-            timer = setTimeout(tick, next || fallbackLabel ? 700 : 2000);
-        };
-        tick();
-        return () => { alive = false; clearTimeout(timer); };
+        return subscribe(jobId, {
+            clipIndex,
+            fast: !!fallbackLabel,
+            cb: (next) => {
+                setOp(next);
+                onBusyChange?.(!!next);
+                setNow(Date.now() / 1000);
+            },
+        });
     }, [jobId, clipIndex, fallbackLabel, onBusyChange]);
 
     if (!op && !fallbackLabel) return null;

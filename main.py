@@ -2073,11 +2073,19 @@ def get_viral_clips(transcript_result, video_duration):
                                  done=done, total=steps)
 
         _sel_progress(0, f"scoring {len(windows)} windows in {len(batches)} batch(es)")
-        for n, batch in enumerate(batches, 1):
-            scored.extend(_run_stage_split(
-                client, model_name, batch, _score_prompt,
-                gemini_worker.ScoreResponse, "windows", costs, "score"))
-            _sel_progress(n, f"scored batch {n} of {len(batches)}")
+        # The batches are independent calls: run a few at once. One after the
+        # other, a 30-min video spent minutes waiting on 8+ sequential LLM
+        # round trips. LLM_SCORE_PARALLEL=1 restores the old behaviour.
+        # A single local endpoint (Ollama on one GPU/CPU) only queues them: keep 1.
+        local_only = llm_backend.active() and not llm_backend.chain()
+        parallel = max(1, int(os.environ.get("LLM_SCORE_PARALLEL", "1" if local_only else "4") or 1))
+        with ThreadPoolExecutor(max_workers=min(parallel, len(batches) or 1)) as pool:
+            futures = [pool.submit(_run_stage_split, client, model_name, batch, _score_prompt,
+                                   gemini_worker.ScoreResponse, "windows", costs, "score")
+                       for batch in batches]
+            for n, fut in enumerate(as_completed(futures), 1):
+                scored.extend(fut.result())
+                _sel_progress(n, f"scored batch {n} of {len(batches)}")
 
         # Shortlist the top windows; scale with duration so long videos surface
         # more candidates without exploding the detail call.

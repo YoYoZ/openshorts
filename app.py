@@ -4131,6 +4131,30 @@ async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
     return {**result, "model": cost.get("model"), "cost": round(cost.get("total_cost", 0), 5)}
 
 
+# (path, mtime) -> (clips, cost). The sidebar polls this list every few
+# seconds; re-parsing every project's metadata (1 MB+ with the transcript)
+# each time cost a steady slice of CPU that grew with every project.
+_meta_summary_cache = {}
+
+
+def _meta_summary(meta_path):
+    try:
+        mtime = os.path.getmtime(meta_path)
+    except OSError:
+        return None, None
+    hit = _meta_summary_cache.get(meta_path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = json.load(f)
+        summary = (len(data.get("shorts") or []), (data.get("cost_analysis") or {}).get("total_cost"))
+    except Exception:
+        return None, None
+    _meta_summary_cache[meta_path] = (mtime, summary)
+    return summary
+
+
 @app.get("/api/local/projects")
 async def local_projects():
     """Every job in OUTPUT_DIR, newest first, for the sidebar's project list."""
@@ -4149,13 +4173,7 @@ async def local_projects():
         clip_count = None
         cost = None
         if meta_path:
-            try:
-                with open(meta_path, encoding="utf-8") as f:
-                    data = json.load(f)
-                clip_count = len(data.get("shorts") or [])
-                cost = (data.get("cost_analysis") or {}).get("total_cost")
-            except Exception:
-                pass
+            clip_count, cost = _meta_summary(meta_path)
         if job:
             status = job.get('status')
         else:
