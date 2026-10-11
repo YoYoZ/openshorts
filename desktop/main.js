@@ -70,6 +70,10 @@ async function startBackend() {
   fs.mkdirSync(cfg.uploadDir, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
   backendPort = await freePort();
+  // Windows calls it "Path": set the existing key, not a second one.
+  const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  const withFfmpegOnPath = () => (runtime.ffmpegDir()
+    ? { [pathKey]: runtime.ffmpegDir() + path.delimiter + (process.env[pathKey] || '') } : {});
   const log = fs.createWriteStream(path.join(LOG_DIR, 'backend.log'), { flags: 'w' });
   backend = spawn(runtime.pythonPath(), ['-m', 'uvicorn', '--app-dir', runtime.SRC, 'app:app',
     '--host', '127.0.0.1', '--port', String(backendPort)], {
@@ -90,6 +94,8 @@ async function startBackend() {
       PYTHONUTF8: '1',
       OPENSHORTS_OUTPUT_DIR: cfg.outputDir,
       OPENSHORTS_UPLOAD_DIR: cfg.uploadDir,
+      // The bundled ffmpeg/ffprobe come first: every pipeline step calls them by name.
+      ...withFfmpegOnPath(),
     },
   });
   backend.stdout.pipe(log);

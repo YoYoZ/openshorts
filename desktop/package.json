@@ -17,8 +17,16 @@
   "build": {
     "appId": "com.autoshortscut.app",
     "productName": "AutoShortsCut",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "runtime.js", "icon.png", "package.json"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "runtime.js",
+      "icon.png",
+      "package.json"
+    ],
     "extraResources": [
       {
         "from": "..",
@@ -35,11 +43,38 @@
           "!**/__pycache__/**",
           "!**/*.pyc"
         ]
+      },
+      {
+        "from": "vendor",
+        "to": "vendor",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
-    "win": { "target": ["nsis"], "icon": "icon.ico" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
-    "linux": { "target": ["AppImage"], "category": "AudioVideo", "icon": "icon-512.png" },
-    "mac": { "target": ["dmg"], "category": "public.app-category.video", "icon": "icon-512.png" }
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "icon": "icon-512.png"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.video",
+      "icon": "icon-512.png"
+    }
   }
 }

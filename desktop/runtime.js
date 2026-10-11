@@ -72,8 +72,26 @@ function requirementsHash() {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 16);
 }
 
-// A system Python 3.10-3.12 to build the environment from.
+// Portable Python and ffmpeg shipped inside the installer (fetch-vendor.mjs);
+// in dev, desktop/vendor when it has been fetched.
+const VENDOR = PACKAGED ? path.join(process.resourcesPath, 'vendor') : path.join(__dirname, 'vendor');
+
+function bundledPython() {
+  const p = IS_WIN ? path.join(VENDOR, 'python', 'python.exe') : path.join(VENDOR, 'python', 'bin', 'python3');
+  return fs.existsSync(p) ? p : null;
+}
+
+// Folder with the bundled ffmpeg/ffprobe, or null (then the system ones are used).
+function ffmpegDir() {
+  const dir = path.join(VENDOR, 'ffmpeg');
+  return fs.existsSync(path.join(dir, IS_WIN ? 'ffmpeg.exe' : 'ffmpeg')) ? dir : null;
+}
+
+// The Python to build the environment from: the bundled one, else a system
+// Python 3.10-3.12.
 function findBasePython() {
+  const bundled = bundledPython();
+  if (bundled) return [bundled, []];
   const candidates = IS_WIN
     ? [['py', ['-3.12']], ['py', ['-3.11']], ['py', ['-3.10']], ['python', []]]
     : [['python3.12', []], ['python3.11', []], ['python3.10', []], ['python3', []]];
@@ -113,8 +131,8 @@ async function ensurePython(onStatus) {
 
   const base = findBasePython();
   if (!base) {
-    throw new Error('Python 3.10-3.12 was not found. Install Python 3.12 from python.org '
-      + '(on Windows tick "Add to PATH" or use the py launcher) and start the app again.');
+    throw new Error('No Python found: this build is missing its bundled Python, and no '
+      + 'Python 3.10-3.12 is installed. Reinstall AutoShortsCut, or install Python 3.12.');
   }
   onStatus('creating the Python environment…');
   if (!fs.existsSync(pythonPath())) await run(base[0], [...base[1], '-m', 'venv', ENV_DIR]);
@@ -134,5 +152,5 @@ async function ensurePython(onStatus) {
 
 module.exports = {
   PACKAGED, SRC, DATA, ENV_FILE, WORK_DIR,
-  pythonPath, loadEnvFile, ensurePython,
+  pythonPath, loadEnvFile, ensurePython, ffmpegDir,
 };

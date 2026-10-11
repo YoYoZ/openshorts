@@ -5,10 +5,11 @@ name: Desktop app
 # by hand on GitHub). A tag desktop-vX.Y.Z makes the draft for that version;
 # any other build makes "vX.Y.Z build N" from desktop/package.json.
 #
-# The packages carry the backend source and the built dashboard. The first
-# launch creates a Python environment from a system Python 3.10-3.12 and
-# installs requirements.txt (see desktop/runtime.js), so the target machine
-# needs Python and ffmpeg on PATH.
+# The packages carry the backend source, the built dashboard, a portable
+# CPython and static ffmpeg/ffprobe (desktop/fetch-vendor.mjs), so the target
+# machine needs nothing preinstalled. The first launch builds a Python
+# environment from the bundled interpreter and installs requirements.txt
+# (internet needed once, about 3 GB; see desktop/runtime.js).
 on:
   workflow_dispatch:
   push:
@@ -53,6 +54,29 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Bundle Python and ffmpeg
+        working-directory: desktop
+        run: node fetch-vendor.mjs
+
+      # What a fresh machine does on first launch, with the bundled pieces
+      # only: build the environment, install requirements, import the backend.
+      - name: Smoke-test the bundled runtime
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=desktop/vendor/python/python.exe; ENVPY=smoke-env/Scripts/python.exe;
+          else PY=desktop/vendor/python/bin/python3; ENVPY=smoke-env/bin/python; fi
+          export PATH="$PWD/desktop/vendor/ffmpeg:$PATH"
+          "$PY" -m venv smoke-env
+          "$ENVPY" -m pip install --quiet --upgrade pip
+          # CPU PyTorch keeps the test small; the app picks CUDA builds on NVIDIA machines.
+          "$ENVPY" -m pip install --quiet torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+          "$ENVPY" -m pip install --quiet -r requirements.txt
+          ffmpeg -hide_banner -version | head -1
+          ffprobe -hide_banner -version | head -1
+          ffmpeg -hide_banner -filters | grep -q " subtitles " && echo "libass ok"
+          PYTHONUTF8=1 "$ENVPY" -c "import app, main, llm_backend, render_gc, shorts_checklist; print('backend imports ok')"
+          rm -rf smoke-env
 
       - name: Build the desktop app
         working-directory: desktop
@@ -103,7 +127,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           body: |
-            Windows installer, Linux AppImage and macOS dmg (unsigned).
-            Needs Python 3.10-3.12 and ffmpeg on the machine; the first launch
-            installs the processing engine into the app's data folder.
+            Windows installer, Linux AppImage and macOS dmg (Apple Silicon), unsigned.
+            Self-contained: Python and ffmpeg are bundled. The first launch needs
+            internet once to install the processing engine (about 3 GB) into the
+            app's data folder.
           files: artifacts/*

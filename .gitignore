@@ -61,3 +61,4 @@ desktop/dist/
 llm_spend.json
 llm_verify.json
 local_settings.json.tmp
+desktop/vendor/
