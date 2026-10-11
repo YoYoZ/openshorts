@@ -626,6 +626,65 @@ function StorageSection({ settings, onSaved }) {
     );
 }
 
+const TASK_LABELS = {
+    LayoutAndSubtitles: 'layout + burned-in subtitles', LayoutChoice: 'layout', SubtitleAnswer: 'burned-in subtitles',
+    ShotContentResponse: 'screen recordings', EditPlan: 'auto edit', EffectsConfig: 'effects', RepairedFilter: 'filter fixes',
+};
+
+function VerifySection({ settings, onSaved }) {
+    const s = useSection(settings, 'verify', onSaved);
+    const d = s.draft || {};
+    const [stats, setStats] = useState(null);
+    useEffect(() => {
+        apiFetch('/api/settings/verify-stats').then((r) => r.json()).then(setStats).catch(() => setStats({}));
+    }, []);
+    const rows = Object.entries(stats || {}).flatMap(([task, pairs]) =>
+        Object.entries(pairs).map(([pair, p]) => ({ task, pair, ...p })));
+    return (
+        <div>
+            <h3 className="font-display lowercase text-lg text-ink mb-1">spot checks</h3>
+            <p className="text-sm text-muted mb-4">
+                Now and then a simple-task answer is asked again of the hard-task list; that answer is used, and whether the
+                two agreed is counted below. It costs one hard-task call per check (about 2¢ with Claude Sonnet).
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <Field label="check">
+                    <Select value={d.mode || 'off'} onChange={(v) => s.set({ mode: v })} options={[
+                        { value: 'off', label: 'never' },
+                        { value: 'low_confidence', label: 'when the model is unsure' },
+                        { value: 'every_n', label: 'every N-th call' },
+                        { value: 'both', label: 'unsure, or every N-th call' },
+                    ]} />
+                </Field>
+                <Field label="every N-th call">
+                    <input type="number" min="1" step="1" value={d.every_n ?? 3} disabled={!['every_n', 'both'].includes(d.mode)}
+                        onChange={(e) => s.set({ every_n: Number(e.target.value) })} className="input-field" />
+                </Field>
+                <Field label="unsure below" hint="the model's own confidence, 0–1">
+                    <input type="number" min="0" max="1" step="0.05" value={d.min_confidence ?? 0.6} disabled={!['low_confidence', 'both'].includes(d.mode)}
+                        onChange={(e) => s.set({ min_confidence: Number(e.target.value) })} className="input-field" />
+                </Field>
+            </div>
+            <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
+            <div className="mt-4 border border-rule rounded-input divide-y divide-rule">
+                {rows.length === 0 && <p className="text-xs text-muted px-3 py-2.5">No spot checks yet.</p>}
+                {rows.map((r) => {
+                    const pct = r.checked ? Math.round((r.agreed / r.checked) * 100) : 0;
+                    return (
+                        <div key={r.task + r.pair} className="flex items-center gap-3 px-3 py-2 text-xs">
+                            <span className="w-48 shrink-0 text-ink2">{TASK_LABELS[r.task] || r.task}</span>
+                            <span className="flex-1 truncate font-mono text-muted" title={r.pair}>{r.pair}</span>
+                            <span className={`readout ${pct >= 90 ? 'text-ok' : pct >= 70 ? 'text-warn' : 'text-danger'}`}>
+                                agreed {r.agreed}/{r.checked} ({pct}%)
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 // ---------------------------------------------------------------- page
 
 export default function SettingsPage() {
@@ -682,6 +741,7 @@ export default function SettingsPage() {
                                             take only a few images get the frames packed into grids. When every model here fails or is over budget,
                                             the hard-task list takes over.</>}
                                         empty="Empty: simple tasks use the hard-task list." />
+                                    <VerifySection {...props} />
                                 </div>
                             )}
                             {section === 'keys' && <KeysSection {...props} />}

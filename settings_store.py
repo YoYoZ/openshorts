@@ -19,6 +19,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.environ.get("LOCAL_SETTINGS_PATH") or os.path.join(_HERE, "local_settings.json")
 SPEND_PATH = os.environ.get("LLM_SPEND_PATH") or os.path.join(
     os.path.dirname(SETTINGS_PATH), "llm_spend.json")
+VERIFY_PATH = os.path.join(os.path.dirname(SPEND_PATH) or ".", "llm_verify.json")
 _lock = threading.RLock()
 
 # Every provider speaks the OpenAI chat-completions API at this base URL.
@@ -51,6 +52,9 @@ DEFAULTS = {
                   for name, p in PROVIDERS.items()},
     "llm_chain": [],          # hard tasks: moments, titles, hooks, rewrites
     "llm_chain_simple": [],   # simple tasks: yes/no image checks, filter fixes (empty = use hard)
+    # Spot-check simple-task answers with the hard-task list: "off",
+    # "low_confidence", "every_n" or "both". The checked answer is the one used.
+    "verify": {"mode": "both", "every_n": 3, "min_confidence": 0.6},
     "transcription": {
         "mode": "auto",                  # auto (groq, then local) | groq | whisper
         "groq_model": "whisper-large-v3",
@@ -240,6 +244,43 @@ def read_spend():
         return {}
 
 
+def read_verify():
+    try:
+        with open(VERIFY_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def verify_tick(task):
+    """Count one simple-task call for ``task``; returns the new count."""
+    with _lock:
+        log = read_verify()
+        counts = log.setdefault("calls", {})
+        counts[task] = counts.get(task, 0) + 1
+        _write_verify(log)
+        return counts[task]
+
+
+def add_verify(task, simple_model, hard_model, agree, reason):
+    """Record one spot check: did the simple model agree with the hard one."""
+    with _lock:
+        log = read_verify()
+        t = log.setdefault("tasks", {}).setdefault(task, {})
+        pair = t.setdefault(f"{simple_model} vs {hard_model}", {"checked": 0, "agreed": 0, "recent": []})
+        pair["checked"] += 1
+        pair["agreed"] += 1 if agree else 0
+        pair["recent"] = ([{"agree": bool(agree), "reason": reason, "at": int(__import__("time").time())}]
+                          + pair["recent"])[:20]
+        _write_verify(log)
+
+
+def _write_verify(log):
+    os.makedirs(os.path.dirname(VERIFY_PATH) or ".", exist_ok=True)
+    with open(VERIFY_PATH, "w", encoding="utf-8") as f:
+        json.dump(log, f, indent=2)
+
+
 def add_spend(entry_id, period, usd):
     """Add ``usd`` to an entry's running total for its current period."""
     if not usd:
@@ -277,6 +318,7 @@ def child_env(env):
     if simple:
         env["LLM_CHAIN_SIMPLE_JSON"] = json.dumps(simple)
         env["LLM_SPEND_PATH"] = SPEND_PATH
+    env["LLM_VERIFY_JSON"] = json.dumps(data.get("verify") or DEFAULTS["verify"])
     t = data["transcription"]
     env["TRANSCRIBE_BACKEND"] = t["mode"]
     if data["providers"]["groq"].get("key"):

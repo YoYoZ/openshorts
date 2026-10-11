@@ -3825,6 +3825,14 @@ async def test_provider(req: ProviderTest):
         return {"ok": False, "error": str(e)[:200]}
 
 
+@app.get("/api/settings/verify-stats")
+async def verify_stats():
+    """How often each simple-task model agreed with the hard-task model on
+    spot checks (llm_backend._spot_check)."""
+    import settings_store
+    return settings_store.read_verify().get("tasks", {})
+
+
 @app.get("/api/settings/models")
 async def provider_models(provider: str):
     """Model ids a provider offers (its OpenAI-compatible /models), for the

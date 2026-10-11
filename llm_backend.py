@@ -312,6 +312,75 @@ def _call_adapting(e, label, prompt, schema, images):
     raise RuntimeError(f"{label}: gave up after adapting the request")
 
 
+_FREE_TEXT = {"why", "reason", "on_screen", "detail", "description", "text"}
+
+
+def _signature(answer):
+    """The decision in an answer, without its free text: what two models have
+    to agree on for a spot check to pass."""
+    if not isinstance(answer, dict):
+        return answer
+    sig = {}
+    for k, v in answer.items():
+        if k in _FREE_TEXT or k == "confidence":
+            continue
+        if isinstance(v, (str, bool, int)):
+            sig[k] = v.strip().lower() if isinstance(v, str) else v
+        elif isinstance(v, list) and v and isinstance(v[0], dict):
+            if "kind" in v[0]:
+                sig[k] = [str(x.get("kind")) for x in v]
+            elif "subtitle_top" in v[0]:   # burned subtitles: present in at least half
+                seen = sum(1 for x in v if x.get("subtitle_top") is not None)
+                sig[k] = seen * 2 >= len(v)
+    return sig
+
+
+def _verify_settings():
+    raw = os.environ.get("LLM_VERIFY_JSON")
+    if raw is None:
+        try:
+            import settings_store
+            return settings_store.load().get("verify") or {}
+        except Exception:
+            return {}
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
+
+
+def _spot_check(prompt, schema, images, answer, cost, simple_entry):
+    """Maybe re-ask a simple-task answer of the hard-task list (Settings →
+    simple tasks → spot checks). Returns the answer to use and its cost."""
+    import settings_store
+    v = _verify_settings()
+    mode = v.get("mode", "off")
+    if mode == "off" or simple_entry is None:
+        return answer, cost
+    if simple_entry.get("id") in {e.get("id") for e in chain("hard")}:
+        return answer, cost   # it already was a hard-task model
+    task = getattr(schema, "__name__", "task")
+    n = settings_store.verify_tick(task)
+    conf = answer.get("confidence") if isinstance(answer, dict) else None
+    low = isinstance(conf, (int, float)) and conf < float(v.get("min_confidence", 0.6))
+    every = max(1, int(v.get("every_n") or 3))
+    due = (mode in ("low_confidence", "both") and low) or (mode in ("every_n", "both") and n % every == 0)
+    if not due:
+        return answer, cost
+    reason = f"confidence {conf:.2f}" if low else f"every {every} calls"
+    try:
+        checked, hard_cost = generate_json(prompt, schema, images=images, tier="hard")
+    except Exception as exc:
+        print(f"   🔎 Spot check skipped ({str(exc)[:100]})", flush=True)
+        return answer, cost
+    agree = _signature(answer) == _signature(checked)
+    hard_model = (hard_cost or {}).get("model", "hard")
+    settings_store.add_verify(task, simple_entry["model"], hard_model, agree, reason)
+    print(f"   🔎 Spot check ({reason}): {simple_entry['model']} "
+          f"{'agrees with' if agree else 'DISAGREES with'} {hard_model}; using {hard_model}", flush=True)
+    return checked, hard_cost
+
+
 def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = None,
                   images: Optional[List[bytes]] = None, tier: str = "hard") -> Tuple[dict, Optional[dict]]:
     """One chat completion that must come back as JSON matching ``schema``.
@@ -356,5 +425,7 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
         cost = _cost(usage, e["model"], float(e.get("price_in") or 0), float(e.get("price_out") or 0),
                      e["provider"])
         settings_store.add_spend(e["id"], e.get("period", "month"), cost["total_cost"])
+        if tier == "simple":
+            return _spot_check(prompt, schema, images, validated, cost, e)
         return validated, cost
     raise RuntimeError("No model in the chain could answer: " + "; ".join(problems))

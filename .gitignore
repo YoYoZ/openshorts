@@ -59,4 +59,5 @@ desktop/node_modules/
 desktop/dist/
 *.bak-before-*
 llm_spend.json
+llm_verify.json
 local_settings.json.tmp
