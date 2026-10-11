@@ -221,9 +221,12 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
         hydrated.current = false;
 
         setCaptionsLoading(true);
-        apiFetch(`/api/clip/${jobId}/${clipIndex}/transcript`)
-            .then((res) => res.ok ? res.json() : null)
-            .then((data) => {
+        // The clip's transcript, and the default look from Settings, together.
+        Promise.all([
+            apiFetch(`/api/clip/${jobId}/${clipIndex}/transcript`).then((res) => (res.ok ? res.json() : null)),
+            apiFetch('/api/settings').then((res) => (res.ok ? res.json() : null)).catch(() => null),
+        ])
+            .then(([data, settings]) => {
                 if (data && data.captions && data.captions.length > 0) {
                     // Edited words last applied to this clip win; alignment of
                     // further edits still runs against the transcript timings.
@@ -231,6 +234,9 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                     setCaptions(shown);
                     setOriginalCaptions(data.captions);
                     setEditableText(shown.map(c => c.text).join(' '));
+                    // Layers, last wins: Settings default → this clip's applied
+                    // look → an unapplied draft.
+                    if (settings?.subtitle_defaults) restoreStyle(settings.subtitle_defaults);
                     if (data.captionStyle) restoreStyle(data.captionStyle);
                     let draft = null;
                     try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch { draft = null; }

@@ -1225,7 +1225,16 @@ def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=
         return None  # silent video: nothing to caption
     try:
         import subtitles as _subs
-        style = _subs.AUTO_CAPTION_STYLE
+        style = dict(_subs.AUTO_CAPTION_STYLE)
+        # The default look from Settings (subtitle_defaults; "position" there
+        # is this dict's "alignment").
+        try:
+            custom = json.loads(os.environ.get("AUTO_CAPTION_STYLE_JSON") or "{}")
+            if custom.get("position"):
+                custom["alignment"] = custom.pop("position")
+            style.update({k: v for k, v in custom.items() if k in style or k == "alignment"})
+        except ValueError:
+            pass
         output_dir = os.path.dirname(clip_path)
         stem = os.path.basename(clip_path)
         generation_id = int(time.time())
@@ -1982,7 +1991,9 @@ def score_batch_size():
             return max(1, int(raw))
         except ValueError:
             pass
-    return 3 if llm_backend.active() else 8
+    # Hosted models in a Settings chain have big contexts; only a single
+    # local endpoint gets the small batch.
+    return 3 if (llm_backend.active() and not llm_backend.chain()) else 8
 
 
 def get_viral_clips(transcript_result, video_duration):

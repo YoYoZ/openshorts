@@ -121,6 +121,13 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
             setDone(false);
             setProgress({ current: 0, total: 0, results: [] });
             setYt(null);
+            // Post time, timezone and cadence default to Settings → YouTube.
+            apiFetch('/api/settings').then((r) => r.json()).then((s) => {
+                const yt = s?.youtube || {};
+                if (yt.default_time) setTime(yt.default_time);
+                if (yt.timezone) setTimezone(yt.timezone);
+                if (yt.cadence) setCadence(yt.cadence);
+            }).catch(() => {});
             apiFetch('/api/youtube/status').then((r) => r.json()).then(setYt)
                 .catch(() => setYt({ connected: false, error: 'backend unreachable' }));
         }
@@ -288,6 +295,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
                         disabled={scheduling}
                         className="input-field appearance-none cursor-pointer"
                     >
+                        {!TIMEZONES.some((t) => t.value === timezone) && <option value={timezone}>{timezone}</option>}
                         {TIMEZONES.map(tz => (
                             <option key={tz.value} value={tz.value}>{tz.label}</option>
                         ))}

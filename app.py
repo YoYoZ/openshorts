@@ -117,17 +117,13 @@ def child_env(base=None):
     env = dict(os.environ if base is None else base)
     for name in CHILD_ENV_DENYLIST:
         env.pop(name, None)
-    settings = read_local_settings()
-    mode = settings.get("transcribe_backend")
-    if mode in TRANSCRIBE_MODES:
-        env["TRANSCRIBE_BACKEND"] = mode
-    # Hook look saved with "apply to all clips": new jobs' auto-hooks use it.
-    hook = settings.get("hook_defaults") or {}
-    for key, var in (("style", "AUTO_HOOK_STYLE"), ("font", "AUTO_HOOK_FONT"),
-                     ("scale", "AUTO_HOOK_SCALE"), ("position", "AUTO_HOOK_POSITION"),
-                     ("duration_seconds", "AUTO_HOOK_SECONDS")):
-        if hook.get(key) not in (None, ""):
-            env[var] = str(hook[key])
+    # Everything the Settings page holds: model chain and keys, transcription,
+    # clip length/count, default subtitle and hook looks, cookies.
+    import settings_store
+    try:
+        settings_store.child_env(env)
+    except Exception as e:
+        print(f"⚠️ Could not apply settings ({type(e).__name__}: {e}); using .env only")
     return env
 
 
@@ -3261,7 +3257,15 @@ async def process_endpoint(
     if api_key:
         env["GEMINI_API_KEY"] = api_key # Override with key from request
     else:
-        env.pop("GEMINI_API_KEY", None)  # local-LLM job: main.py must not find a stale key
+        # The Gemini key from Settings (if any) still powers the frame-based
+        # stages (layout picker, screencast detector); clip picking follows
+        # the Settings model chain either way.
+        import settings_store
+        gem = settings_store.load()["providers"]["gemini"].get("key")
+        if gem:
+            env["GEMINI_API_KEY"] = gem
+        else:
+            env.pop("GEMINI_API_KEY", None)  # local-LLM job: main.py must not find a stale key
     # The stdio fix above only covers this process. main.py prints an emoji on
     # its first line and configures nothing, so on a cp1252 console the child
     # still dies before it renders anything -- the server starts and every job
@@ -3554,34 +3558,121 @@ def _project_title(job_path, meta_path, job):
 
 class LocalSettingsUpdate(BaseModel):
     transcribe_backend: Optional[str] = None
-    # {style, font, scale, position, duration_seconds} for new jobs' auto-hooks
     hook_defaults: Optional[Dict[str, Any]] = None
 
 
 @app.get("/api/local/settings")
 async def get_local_settings():
-    current = read_local_settings()
-    return {
-        "transcribe_backend": current.get("transcribe_backend")
-                              or os.environ.get("TRANSCRIBE_BACKEND", "whisper"),
-        "groq_key_set": bool(os.environ.get("GROQ_API_KEY", "").strip()),
-        "hook_defaults": current.get("hook_defaults"),
-    }
+    """Older, narrow view of the settings (transcription mode, hook defaults)."""
+    import settings_store
+    data = settings_store.load()
+    return {"transcribe_backend": data["transcription"]["mode"],
+            "groq_key_set": bool(data["providers"]["groq"].get("key") or os.environ.get("GROQ_API_KEY")),
+            "hook_defaults": data["hook_defaults"]}
 
 
 @app.put("/api/local/settings")
 async def put_local_settings(update: LocalSettingsUpdate):
-    current = read_local_settings()
+    import settings_store
     if update.transcribe_backend is not None:
         if update.transcribe_backend not in TRANSCRIBE_MODES:
             raise HTTPException(status_code=400, detail=f"transcribe_backend must be one of {TRANSCRIBE_MODES}")
-        current["transcribe_backend"] = update.transcribe_backend
+        t = settings_store.load()["transcription"]
+        settings_store.save_section("transcription", {**t, "mode": update.transcribe_backend})
     if update.hook_defaults is not None:
         allowed = ("style", "font", "scale", "position", "duration_seconds")
-        current["hook_defaults"] = {k: v for k, v in update.hook_defaults.items() if k in allowed}
-    with open(LOCAL_SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(current, f, indent=2)
+        settings_store.save_section("hook_defaults", {k: v for k, v in update.hook_defaults.items() if k in allowed})
     return await get_local_settings()
+
+
+# --- Settings page ------------------------------------------------------------
+
+@app.get("/api/settings")
+async def get_settings():
+    """Every setting, provider keys masked, chain entries with this period's spend."""
+    import settings_store
+    data = settings_store.public()
+    data["providers_meta"] = {n: {"label": p["label"], "key_url": p["key_url"]}
+                              for n, p in settings_store.PROVIDERS.items()}
+    return data
+
+
+@app.put("/api/settings/{section}")
+async def put_settings(section: str, request: Request):
+    """Replace one section (providers, llm_chain, transcription, clips,
+    subtitle_defaults, hook_defaults, youtube, download)."""
+    import settings_store
+    body = await request.json()
+    try:
+        settings_store.save_section(section, body)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown settings section: {section}")
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await get_settings()
+
+
+def _models_headers(provider, key):
+    """Anthropic lists models with its own headers; everyone else takes Bearer."""
+    if provider == "anthropic":
+        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    return {"Authorization": f"Bearer {key or 'none'}"}
+
+
+class ProviderTest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+
+
+@app.post("/api/settings/test")
+async def test_provider(req: ProviderTest):
+    """Check a provider's key: list its models, and if a model is given, ask it
+    for a one-word answer. Costs a fraction of a cent at most."""
+    import settings_store
+    if req.provider not in settings_store.PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    base, key = settings_store.provider_endpoint(req.provider)
+    if not key and req.provider != "custom":
+        return {"ok": False, "error": "no key saved for this provider"}
+    headers = {"Authorization": f"Bearer {key or 'none'}"}
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            if req.model:
+                body = {"model": req.model, "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+                        "max_tokens": 16}
+                r = await client.post(f"{base}/chat/completions", json=body, headers=headers)
+                if r.status_code >= 400:
+                    return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+                reply = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+                return {"ok": True, "reply": str(reply)[:40], "ms": int((time.time() - started) * 1000)}
+            r = await client.get(f"{base}/models", headers=_models_headers(req.provider, key))
+            if r.status_code >= 400:
+                return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+            n = len(r.json().get("data") or [])
+            return {"ok": True, "models": n, "ms": int((time.time() - started) * 1000)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.get("/api/settings/models")
+async def provider_models(provider: str):
+    """Model ids a provider offers (its OpenAI-compatible /models), for the
+    chain's model picker. Empty when the key is missing or the call fails."""
+    import settings_store
+    if provider not in settings_store.PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    base, key = settings_store.provider_endpoint(provider)
+    if not key and provider != "custom":
+        return {"models": []}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"{base}/models", params={"limit": 200} if provider == "anthropic" else None,
+                                 headers=_models_headers(provider, key))
+        ids = sorted({str(m.get("id", "")).removeprefix("models/") for m in (r.json().get("data") or [])} - {""})
+        return {"models": ids}
+    except Exception:
+        return {"models": []}
 
 
 # --- Direct YouTube upload (youtube_upload.py, token in youtube_auth/) -------
@@ -3651,17 +3742,30 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
             raise HTTPException(status_code=400, detail="Scheduled time is in the past")
         publish_at = utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    import settings_store
+    yt = settings_store.load()["youtube"]
     title = (req.title or clip.get("video_title_for_youtube_short") or "Short").strip()
     description = req.description
     if description is None:
-        description = (clip.get("video_description_for_tiktok")
-                       or clip.get("video_description_for_instagram") or "").strip()
-        if data.get("source_url"):
-            description += f"\n\nПовне відео: {data['source_url']}"
-        description += "\n\n#Shorts"
+        # Settings → YouTube → description template: {description}, {title},
+        # {source_url}; a line about a link the project does not have is dropped.
+        values = {"description": (clip.get("video_description_for_tiktok")
+                                  or clip.get("video_description_for_instagram") or "").strip(),
+                  "title": title, "source_url": data.get("source_url") or ""}
+        lines = []
+        for line in (yt.get("description_template") or "{description}").splitlines():
+            if "{source_url}" in line and not values["source_url"]:
+                continue
+            for k, v in values.items():
+                line = line.replace("{" + k + "}", v)
+            lines.append(line)
+        description = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     tags = req.tags
     if tags is None:
-        tags = re.findall(r"#(\w+)", description.replace("#Shorts", ""))[:15]
+        tags = [t.strip().lstrip("#") for t in str(yt.get("tags") or "").split(",") if t.strip()]
+        tags += [t for t in re.findall(r"#(\w+)", description.replace("#Shorts", "")) if t not in tags]
+        tags = tags[:15]
+    privacy = yt.get("privacy", "private") if req.privacy in (None, "private") else req.privacy
     language = (data.get("transcript") or {}).get("language")
 
     try:
@@ -3669,7 +3773,7 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
             ops_update = lambda pct: render_ops._update(req.job_id, pct=round(pct, 1))
             video = await asyncio.to_thread(
                 youtube_upload.upload, path, title, description, tags, publish_at,
-                req.privacy or "private", "28", language, ops_update)
+                privacy, str(yt.get("category") or "28"), language, ops_update)
     except youtube_upload.QuotaExceeded as e:
         raise HTTPException(status_code=429, detail=str(e))
     except youtube_upload.NotConnected as e:

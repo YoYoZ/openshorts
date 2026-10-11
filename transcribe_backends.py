@@ -728,6 +728,13 @@ def _groq_request(audio_path, offset, emit):
         files = {"file": (os.path.basename(audio_path), f, "audio/mpeg")}
         data = {"model": GROQ_MODEL, "response_format": "verbose_json",
                 "temperature": "0", "timestamp_granularities[]": ["word", "segment"]}
+        if os.environ.get("TRANSCRIBE_LANGUAGE"):
+            data["language"] = os.environ["TRANSCRIBE_LANGUAGE"]
+        glossary = os.environ.get("TRANSCRIBE_GLOSSARY", "").strip()
+        if glossary:
+            # Whisper's prompt: spelling hints for names and terms (224 tokens max).
+            terms = [t.strip() for t in re.split(r"[,;\n]+", glossary) if t.strip()]
+            data["prompt"] = ("Glossary: " + ", ".join(terms))[:800]
         resp = httpx.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
                           data=data, files=files, timeout=600)
     if resp.status_code != 200:

@@ -33,6 +33,14 @@ WHISPER_TRANSCRIBE_PARAMS = {
     "condition_on_previous_text": False,
     "word_timestamps": True,
 }
+# Settings page: a fixed language skips detection, and the glossary (names,
+# brands, terms) primes whisper's spelling of them.
+if os.environ.get("TRANSCRIBE_LANGUAGE"):
+    WHISPER_TRANSCRIBE_PARAMS["language"] = os.environ["TRANSCRIBE_LANGUAGE"]
+if os.environ.get("TRANSCRIBE_GLOSSARY", "").strip():
+    WHISPER_TRANSCRIBE_PARAMS["initial_prompt"] = (
+        "Glossary: " + ", ".join(t.strip() for t in re.split(r"[,;\n]+", os.environ["TRANSCRIBE_GLOSSARY"])
+                                 if t.strip()))[:800]
 
 
 def merge_continuation_words(words):
