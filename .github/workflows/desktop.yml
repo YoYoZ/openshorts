@@ -69,9 +69,13 @@ jobs:
           export PATH="$PWD/desktop/vendor/ffmpeg:$PATH"
           "$PY" -m venv smoke-env
           "$ENVPY" -m pip install --quiet --upgrade pip
-          # CPU PyTorch keeps the test small; the app picks CUDA builds on NVIDIA machines.
-          "$ENVPY" -m pip install --quiet torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
-          "$ENVPY" -m pip install --quiet -r requirements.txt
+          # CPU PyTorch keeps the test small (PyPI's macOS wheel already is);
+          # the app picks CUDA builds on NVIDIA machines. One retry for flaky downloads.
+          pipi() { "$ENVPY" -m pip install --quiet --retries 5 "$@" || { sleep 20; "$ENVPY" -m pip install --quiet --retries 5 "$@"; }; }
+          if [ "$RUNNER_OS" != "macOS" ]; then
+            pipi torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+          fi
+          pipi -r requirements.txt
           ffmpeg -hide_banner -version | head -1
           ffprobe -hide_banner -version | head -1
           ffmpeg -hide_banner -filters | grep -q " subtitles " && echo "libass ok"
