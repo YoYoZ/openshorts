@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, Share2, Instagram, Youtube, Video, AlertCircle, Loader2, Copy, Check, Wand2, Type, Calendar, Languages, FileText, Link2, Scissors, Crosshair, TrendingUp } from 'lucide-react';
+import { Download, Share2, Instagram, Youtube, Video, AlertCircle, Loader2, Copy, Check, Wand2, Type, Calendar, Languages, FileText, Link2, Scissors, Crosshair, TrendingUp, Maximize2, Shield, History, Pencil } from 'lucide-react';
 import { getApiUrl } from '../config';
 import { apiFetch } from '../lib/api';
 import RenderOverlay from './RenderOverlay';
@@ -39,11 +39,11 @@ function formatDuration(clip) {
 
 // Editing steps run in this order: each one rebuilds on the previous, so going
 // back to an earlier step means redoing the later ones.
-const StepNo = ({ n }) => (
-    <span className="absolute top-1 left-1.5 readout text-[9px] text-brass">{n}</span>
+const StepNo = ({ n, done }) => (
+    <span className={`absolute top-1 left-1.5 readout text-[9px] ${done ? 'text-ok' : 'text-brass'}`}>{done ? `${n}✓` : n}</span>
 );
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -73,6 +73,57 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         do { prev = f; f = f.replace(/^subtitled_\d+_/, '').replace(/^hooked_\d+_/, '').replace(/^hook_/, ''); } while (f !== prev);
         return f;
     };
+    // Inline title / description editing (PATCH /api/clip/.../meta).
+    const [title, setTitle] = useState(clip.video_title_for_youtube_short || '');
+    const [desc, setDesc] = useState(clip.video_description_for_tiktok || '');
+    const [editingMeta, setEditingMeta] = useState(false);
+    const [metaBusy, setMetaBusy] = useState(null);   // 'save' | 'rewrite'
+    const [metaNote, setMetaNote] = useState(null);
+    useEffect(() => { setTitle(clip.video_title_for_youtube_short || ''); }, [clip.video_title_for_youtube_short]);
+    useEffect(() => { setDesc(clip.video_description_for_tiktok || ''); }, [clip.video_description_for_tiktok]);
+    const saveMeta = async () => {
+        setMetaBusy('save');
+        try {
+            const res = await apiFetch(`/api/clip/${jobId}/${index}/meta`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title, description: desc }),
+            });
+            if (!res.ok) throw new Error(await res.text());
+            onClipPatch?.(index, { video_title_for_youtube_short: title, video_description_for_tiktok: desc });
+            setEditingMeta(false);
+            setMetaNote(null);
+        } catch (e) {
+            setMetaNote(`could not save: ${e.message}`);
+        } finally {
+            setMetaBusy(null);
+        }
+    };
+    const rewriteMeta = async () => {
+        setMetaBusy('rewrite');
+        setMetaNote(null);
+        try {
+            const res = await apiFetch(`/api/clip/${jobId}/${index}/rewrite`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+            });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+            setTitle(body.title);
+            setDesc(body.description);
+            setEditingMeta(true);
+            setMetaNote(`rewritten by ${body.model} ($${body.cost}); save to keep`);
+        } catch (e) {
+            setMetaNote(`rewrite failed: ${e.message}`);
+        } finally {
+            setMetaBusy(null);
+        }
+    };
+
+    // Preview helpers: Shorts safe-zone overlay, and before/after against the
+    // version this card showed before its last render (this session).
+    const [showSafeZone, setShowSafeZone] = useState(false);
+    const [prevVideoUrl, setPrevVideoUrl] = useState(null);
+    const [showBefore, setShowBefore] = useState(false);
+
     // Finished-editing mark (clip.done in the job metadata).
     const [done, setDone] = useState(!!clip.done);
     useEffect(() => { setDone(!!clip.done); }, [clip.done]);
@@ -86,6 +137,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 body: JSON.stringify({ done: next }),
             });
             if (!res.ok) setDone(!next);
+            else onClipPatch?.(index, { done: next });
         } catch {
             setDone(!next);
         }
@@ -168,6 +220,15 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     // burned layers stripped. clip.video_url lags behind renders made in this
     // card, which left the subtitle editor previewing an older version.
     const originalVideoUrl = getApiUrl(`/videos/${jobId}/${stripBurns(serverVideoFile)}`);
+    const lastServerFile = useRef(null);
+    useEffect(() => {
+        if (lastServerFile.current && lastServerFile.current !== serverVideoFile) {
+            setPrevVideoUrl(getApiUrl(`/videos/${jobId}/${lastServerFile.current}`));
+            setShowBefore(false);
+        }
+        lastServerFile.current = serverVideoFile;
+    }, [serverVideoFile, jobId]);
+
     // A render of this clip is running on the server (any of: subtitles,
     // hook, recut, reframe, auto edit), reported by RenderOverlay's polling.
     const [serverBusy, setServerBusy] = useState(false);
@@ -778,22 +839,56 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
     const durationReadout = formatDuration(clip);
 
+    // Which editing steps this clip already went through (its recipe).
+    const stepDone = {
+        trim: !!clip.recipe,
+        frame: !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length)),
+        subs: !!(clip.caption_style || clip.caption_words),
+        hook: !!clip.auto_hook?.text,
+        publish: !!clip.youtube?.video_id,
+    };
+
     // While anything renders this clip, every editing step waits: starting a
     // second edit on a file that is about to be replaced scrambled the layers.
     const busy = serverBusy || isEditing || isSubtitling || isHooking || isTranslating
         || !!bulkProgress?.running || !!bulkHookProgress?.running;
 
+    // Keyboard commands from the clip workspace ({ name, n } changes per press).
+    // A command already pending when the card mounts belongs to the previous clip.
+    const lastCommand = useRef(command);
+    useEffect(() => {
+        if (!command || command === lastCommand.current) return;
+        lastCommand.current = command;
+        const v = videoRef.current;
+        switch (command.name) {
+            case 'play': if (v) { if (v.paused) v.play().catch(() => {}); else v.pause(); } break;
+            case 'back': if (v) v.currentTime = Math.max(0, v.currentTime - 2); break;
+            case 'fwd': if (v) v.currentTime = Math.min(v.duration || 0, v.currentTime + 2); break;
+            case 'ok': toggleDone(); break;
+            case 'safe': setShowSafeZone((x) => !x); break;
+            case 'before': if (prevVideoUrl) setShowBefore((x) => !x); break;
+            default:
+                if (busy) break;
+                v?.pause();
+                if (command.name === 'edit' && onEditClip) onEditClip(index);
+                if (command.name === 'frame' && onReframeClip) onReframeClip(index);
+                if (command.name === 'subs') setShowSubtitleModal(true);
+                if (command.name === 'hook') setShowHookModal(true);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [command]);
+
     return (
-        <div className={`card overflow-hidden flex flex-col md:flex-row group transition-colors animate-fade md:min-h-[420px] ${done ? 'border-ok/60 bg-ok/[0.04]' : 'hover:border-rule2'}`} style={{ animationDelay: `${index * 0.1}s` }}>
+        <div className={`card overflow-hidden flex flex-col md:flex-row group transition-colors animate-fade ${focus ? 'md:h-full' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`} style={{ animationDelay: `${focus ? 0 : index * 0.1}s` }}>
             {/* Left: Video Preview — 9:16 column matching the fixed card height */}
             {/* A full-width 9:16 preview on a phone is ~640px tall on its own,
                 which pushed the title, captions and every action off-screen.
                 Capping the height and centring keeps the whole card scannable
                 without letterboxing the clip. */}
-            <div className="w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 md:w-[236px] bg-black relative shrink-0 aspect-[9/16] md:aspect-auto group/video">
+            <div className={`w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 bg-black relative shrink-0 aspect-[9/16] group/video ${focus ? 'md:h-full md:w-auto' : 'md:w-[236px] md:aspect-auto'}`}>
                 <video
                     ref={videoRef}
-                    src={playbackUrl}
+                    src={showBefore && prevVideoUrl ? prevVideoUrl : playbackUrl}
                     controls
                     className="w-full h-full object-contain"
                     playsInline
@@ -827,7 +922,38 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         }
                     }}
                 />
-                <div className="absolute top-3 left-3 flex gap-2">
+                {/* YouTube Shorts UI covers these areas (approximate): top bar,
+                    the action buttons on the right, title/channel at the bottom. */}
+                {showSafeZone && (
+                    <div className="absolute inset-0 pointer-events-none z-[5]">
+                        <div className="absolute top-0 left-0 right-0 h-[7%] bg-danger/25 border-b border-danger/60" />
+                        <div className="absolute right-0 top-[38%] bottom-[22%] w-[15%] bg-danger/25 border-l border-danger/60" />
+                        <div className="absolute bottom-0 left-0 right-0 h-[22%] bg-danger/25 border-t border-danger/60" />
+                        <span className="absolute bottom-[23%] left-2 text-[10px] text-white/80 bg-black/50 px-1.5 rounded">covered by YouTube UI</span>
+                    </div>
+                )}
+                {showBefore && prevVideoUrl && (
+                    <span className="absolute bottom-14 left-1/2 -translate-x-1/2 z-[6] badge-warn bg-black/70">before</span>
+                )}
+                <div className="absolute top-3 right-3 z-[7] flex flex-col gap-1.5 opacity-0 group-hover/video:opacity-100 focus-within:opacity-100 transition-opacity">
+                    {onOpenFocus && (
+                        <button type="button" title="open in workspace" onClick={() => onOpenFocus(index)}
+                            className="p-1.5 rounded-full bg-black/70 text-white/80 hover:text-white"><Maximize2 size={13} /></button>
+                    )}
+                    <button type="button" title="safe zones: what YouTube's buttons cover" onClick={() => setShowSafeZone((x) => !x)}
+                        className={`p-1.5 rounded-full bg-black/70 ${showSafeZone ? 'text-brass' : 'text-white/80 hover:text-white'}`}><Shield size={13} /></button>
+                    {prevVideoUrl && (
+                        <button type="button" title="before / after the last render" onClick={() => setShowBefore((x) => !x)}
+                            className={`p-1.5 rounded-full bg-black/70 ${showBefore ? 'text-warn' : 'text-white/80 hover:text-white'}`}><History size={13} /></button>
+                    )}
+                </div>
+                <div className="absolute top-3 left-3 flex gap-2 z-[7]">
+                    {onSelect && (
+                        <button type="button" onClick={() => onSelect(index)} title="select for bulk actions"
+                            className={`w-6 h-6 rounded-full flex items-center justify-center ${selected ? 'bg-brass text-black' : 'bg-black/70 text-white/60 hover:text-white'}`}>
+                            {selected ? <Check size={13} /> : <span className="w-2.5 h-2.5 rounded-full border border-white/60" />}
+                        </button>
+                    )}
                     {/* Stays the clip's own number, not its rank: the cards are
                         ordered by score, but this is what the downloaded file
                         is called (clip-N.mp4) and what every api call indexes. */}
@@ -868,9 +994,31 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             {/* Right: Content & Details */}
             <div className="flex-1 p-4 md:p-5 flex flex-col overflow-hidden min-w-0">
                 <div className="mb-4">
-                    <h3 className="text-base font-medium text-ink leading-tight line-clamp-2 mb-2 break-words" title={clip.video_title_for_youtube_short}>
-                        {clip.video_title_for_youtube_short || "Viral Clip Generated"}
-                    </h3>
+                    {editingMeta ? (
+                        <div className="space-y-2 mb-2">
+                            <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100}
+                                className="input-field text-sm font-medium" placeholder="title" />
+                            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={focus ? 5 : 3}
+                                className="input-field text-xs" placeholder="description (with hashtags)" />
+                            <div className="flex items-center gap-2">
+                                <button type="button" onClick={saveMeta} disabled={!!metaBusy} className="btn-primary px-3 py-1.5 text-xs">
+                                    {metaBusy === 'save' ? <Loader2 size={12} className="animate-spin" /> : null} save
+                                </button>
+                                <button type="button" onClick={() => { setEditingMeta(false); setTitle(clip.video_title_for_youtube_short || ''); setDesc(clip.video_description_for_tiktok || ''); setMetaNote(null); }}
+                                    className="text-xs text-muted hover:text-ink2">cancel</button>
+                                <button type="button" onClick={rewriteMeta} disabled={!!metaBusy} className="ml-auto text-xs text-brass hover:underline inline-flex items-center gap-1">
+                                    {metaBusy === 'rewrite' ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} rewrite with AI
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <h3 className="group/title text-base font-medium text-ink leading-tight line-clamp-2 mb-2 break-words cursor-text"
+                            title="click to edit title and description" onClick={() => setEditingMeta(true)}>
+                            {title || "Viral Clip Generated"}
+                            <Pencil size={12} className="inline ml-1.5 text-muted opacity-0 group-hover/title:opacity-100" />
+                        </h3>
+                    )}
+                    {metaNote && <p className="text-xs text-muted mb-2">{metaNote}</p>}
                     {/* The score alone says how much, not why. One line from
                         the selection pass on what this moment has going for it. */}
                     {clip.why && (
@@ -960,7 +1108,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             className={QUIET_BTN}
                         >
                             <Scissors size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
-                            <><StepNo n={1} />edit clip</>
+                            <><StepNo n={1} done={stepDone.trim} />edit clip</>
                         </button>
                     )}
 
@@ -971,7 +1119,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             className={QUIET_BTN}
                         >
                             <Crosshair size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
-                            <><StepNo n={2} />reframing</>
+                            <><StepNo n={2} done={stepDone.frame} />reframing</>
                         </button>
                     )}
 
@@ -981,7 +1129,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         className={QUIET_BTN}
                     >
                         {isSubtitling ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Type size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
-                        {isSubtitling ? 'adding…' : <><StepNo n={3} />subtitles</>}
+                        {isSubtitling ? 'adding…' : <><StepNo n={3} done={stepDone.subs} />subtitles</>}
                     </button>
 
                     <button
@@ -990,7 +1138,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         className={QUIET_BTN}
                     >
                         {isHooking ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Wand2 size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
-                        {isHooking ? 'saving…' : <><StepNo n={4} />edit hook</>}
+                        {isHooking ? 'saving…' : <><StepNo n={4} done={stepDone.hook} />edit hook</>}
                     </button>
 
                     <button

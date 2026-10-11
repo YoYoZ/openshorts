@@ -317,6 +317,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
+  // Windows shows toast notifications only for an app with a user model id.
+  if (process.platform === 'win32') app.setAppUserModelId('com.autoshortscut.app');
   app.whenReady().then(async () => {
     await startUiServer();
     await createWindow();

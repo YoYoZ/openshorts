@@ -84,7 +84,7 @@ function detectTimezone() {
     }
 }
 
-export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
+export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onScheduled = null }) {
     const [time, setTime] = useState('18:00');
     const [time2, setTime2] = useState('12:00');     // second slot for 2/day
     const [cadence, setCadence] = useState('daily');
@@ -105,7 +105,8 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
             const date = new Date();
             date.setDate(date.getDate() + startOffset + dayStep);
             date.setHours(0, 0, 0, 0);
-            return { clip, index: i, date, time: slotTime };
+            // A subset (bulk "schedule selected") carries each clip's real index.
+            return { clip, index: i, clipIndex: clip._index ?? i, date, time: slotTime };
         });
     }, [clips, startOffset, cadence, time, time2]);
 
@@ -152,7 +153,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
         const results = [];
         let quotaHit = false;
         for (let i = 0; i < schedule.length; i++) {
-            const { index, date, time: slotTime } = schedule[i];
+            const { clipIndex, date, time: slotTime } = schedule[i];
             if (quotaHit) {
                 results.push({ index: i, success: false, error: 'daily quota reached', quota: true });
                 setProgress({ current: i + 1, total, results: [...results] });
@@ -164,7 +165,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
                 const res = await apiFetch('/api/youtube/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ job_id: jobId, clip_index: index, scheduled_local: scheduledLocal, timezone }),
+                    body: JSON.stringify({ job_id: jobId, clip_index: clipIndex, scheduled_local: scheduledLocal, timezone }),
                 });
                 const body = await res.json().catch(() => ({}));
                 if (res.status === 429) {
@@ -182,6 +183,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId }) {
         }
 
         setDone(true);
+        onScheduled?.();
         setScheduling(false);
     };
 

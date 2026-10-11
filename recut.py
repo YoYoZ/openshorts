@@ -343,3 +343,29 @@ def perform_recut(*, input_path, segments, output_dir, clean_name,
 def _main_attr(name):
     import main  # heavy — resolved only when a real render/caption runs
     return getattr(main, name)
+
+
+# --- clip time <-> source time -------------------------------------------------
+# Lets per-word caption edits be stored against the SOURCE video, so a later
+# re-cut keeps them for the words it still contains (app._rebuild_layers).
+
+def clip_to_source(t, segments):
+    """Source-video time of clip time ``t`` for a clip made of ``segments``."""
+    acc = 0.0
+    for seg in segments:
+        length = float(seg["end"]) - float(seg["start"])
+        if t < acc + length:
+            return float(seg["start"]) + (t - acc)
+        acc += length
+    return float(segments[-1]["end"]) if segments else t
+
+
+def source_to_clip(s, segments):
+    """Clip time of source time ``s``, or None when the cut leaves it out."""
+    acc = 0.0
+    for seg in segments:
+        start, end = float(seg["start"]), float(seg["end"])
+        if start <= s < end:
+            return acc + (s - start)
+        acc += end - start
+    return None

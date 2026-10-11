@@ -13,6 +13,7 @@ import threading
 import time
 
 _lock = threading.Lock()
+_recent = []   # finished ops, newest last (for the queue panel)
 _ops = {}   # job_id -> {clip_index: {kind, started, pct, step, detail}}
 
 _JOB_IN_PATH = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -24,19 +25,34 @@ def op(job_id, clip_index, kind):
     with _lock:
         _ops.setdefault(job_id, {})[clip_index] = {
             "kind": kind, "started": time.time(), "pct": None, "step": 0, "detail": kind}
+    ok = False
     try:
         yield
+        ok = True
     finally:
         with _lock:
             job_ops = _ops.get(job_id, {})
-            job_ops.pop(clip_index, None)
+            entry = job_ops.pop(clip_index, None)
             if not job_ops:
                 _ops.pop(job_id, None)
+            if entry:
+                _recent.append({"job_id": job_id, "clip_index": clip_index, "kind": kind,
+                                "ok": ok, "finished": time.time(),
+                                "seconds": round(time.time() - entry["started"], 1)})
+                del _recent[:-30]
 
 
 def snapshot(job_id):
     with _lock:
         return {str(k): dict(v) for k, v in _ops.get(job_id, {}).items()}
+
+
+def snapshot_all():
+    """Every re-render in flight, plus the last finished ones (newest last)."""
+    with _lock:
+        running = [{"job_id": j, "clip_index": k, **dict(v)}
+                   for j, ops in _ops.items() for k, v in ops.items()]
+        return running, [dict(r) for r in _recent]
 
 
 def _update(job_id, **fields):

@@ -945,6 +945,81 @@ def _reapply_captions(job_id, clip_index, video_path):
         return None
 
 
+# --- Non-destructive layers --------------------------------------------------
+# A clip is a recipe: the cut (recipe.segments / start..end), the framing, a
+# hook (auto_hook) and a caption look + edited words. Changing the cut or the
+# framing renders a clean base and then puts BOTH layers back from the
+# recipe, hook first and captions last, so edits never depend on the order
+# they were made in. Edited words are kept in source time
+# (caption_words_src) so a new cut keeps the edits for the words it holds.
+
+def _clip_segments(clip):
+    segs = (clip.get('recipe') or {}).get('segments')
+    if segs:
+        return segs
+    return [{"start": float(clip.get('start', 0)), "end": float(clip.get('end', 0))}]
+
+
+def _words_to_source(words, clip):
+    """Clip-relative caption words -> the same words in source-video time."""
+    segs = _clip_segments(clip)
+    return [{"word": w["word"], "start": recut.clip_to_source(float(w["start"]), segs),
+             "end": recut.clip_to_source(max(float(w["start"]), float(w["end"]) - 1e-3), segs) + 1e-3}
+            for w in words]
+
+
+def _words_for_cut(src_words, segments):
+    """Source-time caption words -> clip-relative words for a cut; a word is
+    kept when its middle survives the cut."""
+    out = []
+    for w in src_words or []:
+        mid = (float(w["start"]) + float(w["end"])) / 2
+        m = recut.source_to_clip(mid, segments)
+        if m is None:
+            continue
+        half = (float(w["end"]) - float(w["start"])) / 2
+        out.append({"word": w["word"], "start": round(max(0.0, m - half), 3), "end": round(m + half, 3)})
+    from subtitles import fix_word_overlaps
+    return fix_word_overlaps(out)
+
+
+def _apply_hook_layer(job_id, clip, video_path):
+    """Burn the clip's recorded hook onto a clean file. Returns the hooked path,
+    or None when the clip has no hook."""
+    hook = clip.get('auto_hook') or {}
+    text = (hook.get('text') or '').strip()
+    if not text:
+        return None
+    output_path = os.path.join(os.path.dirname(video_path),
+                               f"hooked_{int(time.time())}_{os.path.basename(video_path)}")
+    try:
+        add_hook_to_video(
+            video_path, text, output_path, position=hook.get('position') or "auto",
+            font_scale=float(hook.get('scale') or 1.0), duration=hook.get('duration_seconds'),
+            style=hook.get('style') or "pill", font=hook.get('font'),
+            layout_ranges=clip.get('layout_ranges'),
+            has_captions=True)   # captions always go back on top
+        return output_path if os.path.exists(output_path) else None
+    except Exception as e:
+        print(f"⚠️  Could not re-apply the hook to {video_path}: {e}")
+        return None
+
+
+def _rebuild_layers(job_id, clip_index, base_path, captions=True):
+    """Hook, then captions, from the clip's recipe onto a clean ``base_path``.
+    Returns the final file's path (``base_path`` when there is nothing to add).
+    The metadata must already describe the new cut."""
+    meta_files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
+    if not meta_files:
+        return base_path
+    with open(meta_files[0], encoding='utf-8') as f:
+        clip = json.load(f).get('shorts', [])[clip_index]
+    path = _apply_hook_layer(job_id, clip, base_path) or base_path
+    if captions:
+        path = _reapply_captions(job_id, clip_index, path) or path
+    return path
+
+
 # The /api/subtitle request fields that make up a caption look. The endpoint
 # records them on the clip ('caption_style' in the metadata) so the paths that
 # put captions back on a freshly derived file (hook, AI edit, recut) burn the
@@ -2844,8 +2919,21 @@ async def get_config():
         "jobRetentionSeconds": JOB_RETENTION_SECONDS,
         # Self-host only: tells the dashboard the Gemini key is optional
         # because the moment picker runs on an OpenAI-compatible server.
-        "localLlm": None if BILLING_ENABLED else llm_backend.describe(),
+        "localLlm": None if BILLING_ENABLED else _llm_describe(),
     }
+
+
+def _llm_describe():
+    """The model chain from Settings (what job processes will use), else the
+    .env endpoint; None when no LLM is configured at all."""
+    import settings_store
+    try:
+        chain = json.loads(settings_store.child_env({}).get("LLM_CHAIN_JSON") or "[]")
+    except ValueError:
+        chain = []
+    if chain:
+        return {"provider": "chain", "model": chain[0].get("model"), "baseUrl": chain[0].get("base_url")}
+    return llm_backend.describe()
 
 async def _probe_youtube_quality(url: str) -> dict:
     """Run quality_probe.py in a worker thread; {} on any failure (fail-open)."""
@@ -3136,7 +3224,7 @@ async def process_endpoint(
     max_minutes: Optional[str] = Form(None),
 ):
     api_key = await resolve_gemini(request)
-    if not api_key and not (llm_backend.active() and not BILLING_ENABLED):
+    if not api_key and not (_llm_describe() and not BILLING_ENABLED):
         # Self-host with an OpenAI-compatible server configured needs no
         # Google key for the core pipeline: the moment picker runs there and
         # the frame-based stages degrade on their own (layout_picker returns
@@ -3818,6 +3906,103 @@ async def set_clip_done(job_id: str, clip_index: int, req: ClipDoneRequest):
     return {"done": bool(req.done)}
 
 
+class ClipMetaUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    done: Optional[bool] = None
+    rejected: Optional[bool] = None
+
+
+@app.patch("/api/clip/{job_id}/{clip_index}/meta")
+async def update_clip_meta(job_id: str, clip_index: int, req: ClipMetaUpdate):
+    """Edit a clip's title / description, or mark it done or rejected."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    meta_path, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    changes = {}
+    if req.title is not None:
+        changes["video_title_for_youtube_short"] = req.title.strip()[:100]
+    if req.description is not None:
+        # One description serves every platform's upload.
+        changes["video_description_for_tiktok"] = req.description.strip()[:4500]
+        changes["video_description_for_instagram"] = req.description.strip()[:2200]
+    if req.done is not None:
+        changes["done"] = bool(req.done)
+    if req.rejected is not None:
+        changes["rejected"] = bool(req.rejected)
+    clips[clip_index].update(changes)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    job = jobs.get(job_id)
+    mem = (job or {}).get("result", {}).get("clips") or []
+    if clip_index < len(mem):
+        mem[clip_index].update(changes)
+    return {"updated": changes}
+
+
+class RewriteRequest(BaseModel):
+    instruction: Optional[str] = None
+
+
+@app.post("/api/clip/{job_id}/{clip_index}/rewrite")
+async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
+    """A fresh title and description for a clip from what is said in it, by
+    the Settings model chain. Returned for review; nothing is saved."""
+    import settings_store
+    from pydantic import BaseModel as _BM
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    _, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    clip = clips[clip_index]
+    segs = _clip_segments(clip)
+    words = [w for s in (data.get("transcript") or {}).get("segments", []) for w in s.get("words", [])]
+    spoken = " ".join(w["word"].strip() for w in words
+                      if recut.source_to_clip((w["start"] + w["end"]) / 2, segs) is not None)[:6000]
+    language = (data.get("transcript") or {}).get("language", "uk")
+
+    class Meta(_BM):
+        title: str
+        description: str
+
+    prompt = chr(10).join([
+        f"You write YouTube Shorts metadata. Language: {language} (write in it).",
+        "What is said in the short:",
+        spoken,
+        "",
+        f"Current title: {clip.get('video_title_for_youtube_short', '')}",
+        f"Current description: {clip.get('video_description_for_tiktok', '')}",
+        "",
+        "Write a better title (max 90 characters, a hook that makes people stop, no clickbait lies, "
+        "no hashtags) and a description (2-3 short sentences, then 3-5 relevant hashtags).",
+        f"Extra instruction from the creator: {req.instruction}" if req.instruction else "",
+        'Answer as JSON: {"title": "...", "description": "..."}',
+    ])
+    env = settings_store.child_env({})
+    if not env.get("LLM_CHAIN_JSON"):
+        raise HTTPException(status_code=400, detail="No AI model configured (Settings → AI models)")
+    import llm_backend
+    saved = os.environ.get("LLM_CHAIN_JSON"), os.environ.get("LLM_SPEND_PATH")
+    os.environ["LLM_CHAIN_JSON"] = env["LLM_CHAIN_JSON"]
+    os.environ["LLM_SPEND_PATH"] = env.get("LLM_SPEND_PATH", "")
+    try:
+        result, cost = await asyncio.to_thread(llm_backend.generate_json, prompt, Meta)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+    finally:
+        for k, v in zip(("LLM_CHAIN_JSON", "LLM_SPEND_PATH"), saved):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return {**result, "model": cost.get("model"), "cost": round(cost.get("total_cost", 0), 5)}
+
+
 @app.get("/api/local/projects")
 async def local_projects():
     """Every job in OUTPUT_DIR, newest first, for the sidebar's project list."""
@@ -3945,6 +4130,37 @@ def _tracked(kind):
 async def clip_ops(job_id: str):
     """Re-renders in flight for this job: {clip_index: {kind, pct, step, started}}."""
     return render_ops.snapshot(job_id)
+
+
+def _job_title(job_id):
+    job_path = os.path.join(OUTPUT_DIR, job_id)
+    if not os.path.isdir(job_path):
+        return f"project {job_id[:8]}"
+    metas = glob.glob(os.path.join(glob.escape(job_path), "*_metadata.json"))
+    try:
+        return _project_title(job_path, metas[0] if metas else None, jobs.get(job_id)) or f"project {job_id[:8]}"
+    except OSError:
+        return f"project {job_id[:8]}"
+
+
+@app.get("/api/activity")
+async def activity():
+    """Everything the machine is busy with, across projects: pipeline jobs
+    (queued / processing) and clip re-renders, plus recently finished
+    re-renders so the dashboard can notify about them."""
+    running, recent = render_ops.snapshot_all()
+    pipeline = []
+    for job_id, job in list(jobs.items()):
+        if job.get('status') in ('queued', 'processing') and not job.get('cancelled'):
+            pipeline.append({"job_id": job_id, "status": job.get('status'),
+                             "progress": job.get('progress')})
+    titles = {}
+    for item in [*pipeline, *running, *recent]:
+        jid = item["job_id"]
+        if jid not in titles:
+            titles[jid] = _job_title(jid)
+        item["title"] = titles[jid]
+    return {"jobs": pipeline, "renders": running, "recent": recent, "now": time.time()}
 
 
 _system_cache = {"t": 0.0, "data": None}
@@ -4909,9 +5125,9 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
     reservation_id = await reserve_managed_action(
         request, rerender_minutes, req.job_id, "rerender")
 
-    v_transcript = (recut.virtual_transcript(transcript, segments)
-                    if req.reapply_captions else None)
-
+    # Render a CLEAN base (no captions); hook and captions are rebuilt on it
+    # from the recipe afterwards (_rebuild_layers), so the hook survives a
+    # re-cut and captions stay the top layer.
     def run_recut():
         if fast:
             return recut.perform_recut(
@@ -4919,25 +5135,20 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
                 segments=recut.rebase_segments(
                     segments, canonical_range['start'], canonical_range['end']),
                 output_dir=output_dir, clean_name=clean_name,
-                reframe=False, captions_transcript=v_transcript,
-                captioner=_recut_captioner(clip))
+                reframe=False, captions_transcript=None, captioner=None)
         return recut.perform_recut(
             input_path=source_path, segments=segments,
             output_dir=output_dir, clean_name=clean_name,
             reframe=True, output_format=data.get('output_format', 'auto'),
             force_strategy=force_strategy,
-            captions_transcript=v_transcript,
-            captioner=_recut_captioner(clip),
+            captions_transcript=None, captioner=None,
             # Trim the source's own subtitles only when ours go back on.
             subtitle_band=(data.get('source_subtitle_band')
-                           if v_transcript else None))
+                           if req.reapply_captions else None))
 
     try:
         loop = asyncio.get_event_loop()
-        served_name, _clean_recut_name = await loop.run_in_executor(None, run_recut)
-        served_name = await _deliver(request, req.job_id, served_name)
-
-        new_video_url = f"/videos/{req.job_id}/{served_name}"
+        _base_name, _clean_recut_name = await loop.run_in_executor(None, run_recut)
         new_recipe = {"v": 1, "segments": segments,
                       "canonical_range": canonical_range}
         if framing != 'auto':
@@ -4948,7 +5159,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
         new_start = min(s['start'] for s in segments)
         new_end = max(s['end'] for s in segments)
 
-        updates = {'video_url': new_video_url, 'start': new_start,
+        updates = {'start': new_start,
                    'end': new_end, 'recipe': new_recipe,
                    # The stacked stretches of THIS render (empty on the fast
                    # path, which never reframes): captions follow them.
@@ -4960,12 +5171,29 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
         # wrong shots (re-frame after trimming to re-apply by hand).
         if clip.get('crop_overrides'):
             updates['crop_overrides'] = None
-        # Edited caption words are timed against the previous cut; the new one
-        # captions from the transcript (in the recorded style, if any).
-        if clip.get('caption_words'):
-            updates['caption_words'] = None
+        # Edited caption words follow the cut: kept in source time, re-timed
+        # onto the new segments (words the cut removed drop out).
+        src_words = clip.get('caption_words_src')
+        if not src_words and clip.get('caption_words'):
+            # Edits saved before source-time words existed: derive them from
+            # the cut they were made on (the clip still holds the old recipe).
+            src_words = _words_to_source(clip['caption_words'], clip)
+            updates['caption_words_src'] = src_words
+        if src_words:
+            updates['caption_words'] = _words_for_cut(src_words, segments) or None
         clip.update(updates)
         data['shorts'] = clips
+        with open(json_files[0], 'w') as f:
+            json.dump(data, f, indent=2)
+
+        # Hook, then captions, back on the clean base.
+        final_path = await loop.run_in_executor(
+            None, _rebuild_layers, req.job_id, req.clip_index,
+            os.path.join(output_dir, _clean_recut_name), req.reapply_captions)
+        served_name = await _deliver(request, req.job_id, os.path.basename(final_path))
+        new_video_url = f"/videos/{req.job_id}/{served_name}"
+        updates['video_url'] = new_video_url
+        clip['video_url'] = new_video_url
         with open(json_files[0], 'w') as f:
             json.dump(data, f, indent=2)
         mem_clips = (job.get('result') or {}).get('clips') or []
@@ -5275,10 +5503,8 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
     reservation_id = await reserve_managed_action(
         request, rerender_minutes, req.job_id, "reframe")
 
-    # Every default clip ships with burned captions; re-rendering without them
-    # would silently hand back a caption-less file.
-    v_transcript = (recut.virtual_transcript(data.get('transcript') or {}, segments)
-                    if req.reapply_captions else None)
+    # A clean base; hook and captions (with any edited words) go back on from
+    # the recipe afterwards (_rebuild_layers).
 
     base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
     # The CLEAN base name, exactly as /api/clip/rerender does — never the
@@ -5296,30 +5522,35 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
             reframe=True, output_format=data.get('output_format', 'auto'),
             force_strategy=force_strategy,
             crop_overrides=overrides,
-            captions_transcript=v_transcript,
-            captioner=_recut_captioner(clip),
+            captions_transcript=None, captioner=None,
             # Trim the source's own subtitles only when ours go back on.
             subtitle_band=(data.get('source_subtitle_band')
-                           if v_transcript else None))
+                           if req.reapply_captions else None))
 
     try:
         loop = asyncio.get_event_loop()
-        served_name, _clean = await loop.run_in_executor(None, run)
-        served_name = await _deliver(request, req.job_id, served_name)
-
-        new_video_url = f"/videos/{req.job_id}/{served_name}"
+        _base_name, _clean = await loop.run_in_executor(None, run)
         new_recipe = {"v": 1, "segments": segments,
                       "canonical_range": canonical_range}
         if framing != 'auto':
             new_recipe["framing"] = framing
         updates = {
-            'video_url': new_video_url,
             'recipe': new_recipe,
             'crop_overrides': {str(k): v for k, v in overrides.items()},
             'layout_ranges': layout_ranges.read(os.path.join(output_dir, _clean)),
         }
         clip.update(updates)
         data['shorts'] = clips
+        with open(json_files[0], 'w') as f:
+            json.dump(data, f, indent=2)
+
+        final_path = await loop.run_in_executor(
+            None, _rebuild_layers, req.job_id, req.clip_index,
+            os.path.join(output_dir, _clean), req.reapply_captions)
+        served_name = await _deliver(request, req.job_id, os.path.basename(final_path))
+        new_video_url = f"/videos/{req.job_id}/{served_name}"
+        updates['video_url'] = new_video_url
+        clip['video_url'] = new_video_url
         with open(json_files[0], 'w') as f:
             json.dump(data, f, indent=2)
         mem_clips = (job.get('result') or {}).get('clips') or []
@@ -5731,8 +5962,12 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
             clips[req.clip_index]['caption_style'] = caption_style
             if caption_words:
                 clips[req.clip_index]['caption_words'] = caption_words
+                # Same words in source time: a later re-cut keeps these edits.
+                clips[req.clip_index]['caption_words_src'] = _words_to_source(
+                    caption_words, clips[req.clip_index])
             else:
                 clips[req.clip_index].pop('caption_words', None)
+                clips[req.clip_index].pop('caption_words_src', None)
             # Update the main data structure
             data['shorts'] = clips
             
@@ -5940,7 +6175,7 @@ async def add_hook(req: HookRequest, request: Request):
     else:
         clip_data['auto_hook'] = {
             "text": req.text, "style": req.style, "font": req.font, "position": req.position,
-            "duration_seconds": req.duration_seconds,
+            "duration_seconds": req.duration_seconds, "scale": font_scale,
         }
 
     # Update Persistence (Same logic as subtitles)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Upload, Sparkles, Youtube, Instagram, Share2, ChevronDown, Check, Activity, LayoutDashboard, Settings, Plus, History, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Mail, Loader2, Download, Menu, Lock, Rocket } from 'lucide-react';
+import { Upload, Sparkles, Youtube, Instagram, Share2, ChevronDown, Check, Activity, LayoutDashboard, Settings, Plus, History, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Mail, Loader2, Download, Menu, Lock, Rocket, ChevronLeft, ChevronRight } from 'lucide-react';
 import KeyInput from './components/KeyInput';
 import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
@@ -7,6 +7,7 @@ import ResultCard from './components/ResultCard';
 import ProcessingAnimation from './components/ProcessingAnimation';
 import JobProgress from './components/JobProgress';
 import RecentProjects from './components/RecentProjects';
+import StatusDock from './components/StatusDock';
 import SettingsPage from './components/SettingsPage';
 import FolderSettings from './components/FolderSettings';
 // import Gallery from './components/Gallery';
@@ -245,6 +246,18 @@ const UserProfileSelector = ({ profiles, selectedUserId, onSelect, onConnect }) 
 
 const SESSION_KEY = 'openshorts_session';
 
+// Where a clip is in its life: rejected, on YouTube (scheduled or live),
+// marked done, or still to edit.
+function clipStatus(clip) {
+  if (clip?.rejected) return 'rejected';
+  const yt = clip?.youtube;
+  if (yt?.video_id) {
+    const at = yt.publish_at ? Date.parse(yt.publish_at) : NaN;
+    return Number.isFinite(at) && at > Date.now() ? 'scheduled' : 'published';
+  }
+  return clip?.done ? 'done' : 'todo';
+}
+
 // The server's own explanation for a rejected/failed job, readable: FastAPI
 // answers {"detail": "..."} or {"detail": {"message": ...}}. Showing the raw
 // JSON (or a generic "failed") hid actionable reasons such as "this video is
@@ -299,9 +312,9 @@ function App() {
   // the ephemeral local /videos/ files have been cleaned up (e.g. after a reload).
   const [durableClips, setDurableClips] = useState({});
 
-  const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
+  const [apiKey] = useState(localStorage.getItem('gemini_key') || '');
   // Social API State - Load encrypted or plain
-  const [uploadPostKey, setUploadPostKey] = useState(() => {
+  const [uploadPostKey] = useState(() => {
     const stored = localStorage.getItem('uploadPostKey_v3');
     if (stored) return decrypt(stored);
     return '';
@@ -354,6 +367,100 @@ function App() {
         return sb - sa || a.index - b.index;
       });
   }, [results]);
+
+  // Clip list management: status filter, sort, bulk selection, workspace.
+  const [clipFilter, setClipFilter] = useState('all');
+  const [clipSort, setClipSort] = useState('score');
+  const [selectedIdx, setSelectedIdx] = useState(() => new Set());
+  const [focusIdx, setFocusIdx] = useState(null);       // original clip index in the workspace
+  const [focusCmd, setFocusCmd] = useState(null);       // { name, n } keyboard command
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [scheduleSubset, setScheduleSubset] = useState(null);
+  useEffect(() => { setSelectedIdx(new Set()); setFocusIdx(null); setClipFilter('all'); }, [jobId]);
+  // Renders made in one card (workspace or grid) land in the job metadata;
+  // re-reading it on every workspace switch keeps the other copy current.
+  useEffect(() => {
+    if (jobId && results?.clips?.length) refreshResults();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIdx]);
+  const visibleClips = useMemo(() => {
+    const list = clipSort === 'order'
+      ? [...rankedClips].sort((a, b) => a.index - b.index)
+      : rankedClips;
+    if (clipFilter === 'all') return list.filter(({ clip }) => !clip.rejected);
+    return list.filter(({ clip }) => clipStatus(clip) === clipFilter);
+  }, [rankedClips, clipFilter, clipSort]);
+  const clipCounts = useMemo(() => {
+    const c = { all: 0, todo: 0, done: 0, scheduled: 0, published: 0, rejected: 0 };
+    rankedClips.forEach(({ clip }) => {
+      const s = clipStatus(clip);
+      c[s] += 1;
+      if (s !== 'rejected') c.all += 1;
+    });
+    return c;
+  }, [rankedClips]);
+  const patchClip = (index, patch) => {
+    setResults((prev) => {
+      if (!prev?.clips?.[index]) return prev;
+      return { ...prev, clips: prev.clips.map((c, i) => (i === index ? { ...c, ...patch } : c)) };
+    });
+  };
+  const toggleSelect = (index) => {
+    setSelectedIdx((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index); else next.add(index);
+      return next;
+    });
+  };
+  const bulkMeta = async (patch) => {
+    setBulkBusy(true);
+    for (const index of selectedIdx) {
+      try {
+        const res = await apiFetch(`/api/clip/${jobId}/${index}/meta`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+        });
+        if (res.ok) patchClip(index, patch);
+      } catch { /* leave that clip as it was */ }
+    }
+    setBulkBusy(false);
+    setSelectedIdx(new Set());
+  };
+  const refreshResults = async () => {
+    try {
+      const data = await pollJob(jobId);
+      if (data.result) setResults(data.result);
+    } catch { /* keep current results */ }
+  };
+  // Workspace navigation moves through the clips currently listed.
+  const stepFocus = (dir) => {
+    const pos = visibleClips.findIndex(({ index }) => index === focusIdx);
+    const next = visibleClips[pos + dir];
+    if (next) setFocusIdx(next.index);
+  };
+  useEffect(() => {
+    if (focusIdx === null) return undefined;
+    const keys = {
+      ' ': 'play', k: 'play', j: 'back', l: 'fwd', o: 'ok', s: 'safe', h: 'before',
+      1: 'edit', 2: 'frame', 3: 'subs', 4: 'hook',
+    };
+    const onKey = (e) => {
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // An editor or modal opened from the workspace owns the keyboard.
+      if (editingClip !== null || reframingClip !== null || document.querySelector('[role="dialog"]')) return;
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (key === 'Escape') { setFocusIdx(null); return; }
+      if (key === 'ArrowLeft') { e.preventDefault(); stepFocus(-1); return; }
+      if (key === 'ArrowRight') { e.preventDefault(); stepFocus(1); return; }
+      const name = keys[key];
+      if (!name) return;
+      e.preventDefault();
+      setFocusCmd((prev) => ({ name, n: (prev?.n || 0) + 1 }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
   // Bulk subtitles: apply one style to every clip of the job (triggered from
   // within a clip's subtitle modal via "apply to all").
   const [bulkSub, setBulkSub] = useState({ running: false, current: 0, total: 0, errors: 0 });
@@ -750,7 +857,7 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `openshorts_clips_${(jobId || '').slice(0, 8)}.zip`;
+      a.download = `autoshortscut_clips_${(jobId || '').slice(0, 8)}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1344,55 +1451,16 @@ function App() {
   };
   const tabLocked = (id) => tutorialLock && id !== 'dashboard';
 
-  // Shared footer links (landing, repo, pricing, contact) — same list in the
-  // desktop rail and the mobile drawer, so they can never drift apart.
-  const NavFooterLinks = ({ collapsed = false }) => (
-    <>
-      <a
-        href="#landing"
-        className="flex items-center gap-2 px-3 py-2 text-xs lowercase text-muted hover:text-ink2 transition-colors"
-      >
-        <Globe size={14} className="shrink-0" />
-        <span className={collapsed ? 'hidden lg:block truncate' : 'truncate'}>landing page</span>
-      </a>
-      <a
-        href="https://github.com/mutonby/openshorts"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center gap-2 px-3 py-2 text-xs lowercase text-muted hover:text-ink2 transition-colors"
-      >
-        <svg height="14" viewBox="0 0 16 16" version="1.1" width="14" aria-hidden="true" fill="currentColor" className="shrink-0"><path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-        <span className={collapsed ? 'hidden lg:block truncate' : 'truncate'}>open source</span>
-      </a>
-      {billingEnabled && (
-        <a
-          href="#/pricing"
-          className="flex items-center gap-2 px-3 py-2 text-xs lowercase text-muted hover:text-ink2 transition-colors"
-        >
-          <Sparkles size={14} className="shrink-0" />
-          <span className={collapsed ? 'hidden lg:block truncate' : 'truncate'}>plans &amp; pricing</span>
-        </a>
-      )}
-      <a
-        href="mailto:info@openshorts.app"
-        className="flex items-center gap-2 px-3 py-2 text-xs lowercase text-muted hover:text-ink2 transition-colors"
-      >
-        <Mail size={14} className="shrink-0" />
-        <span className={collapsed ? 'hidden lg:block truncate' : 'truncate'}>info@openshorts.app</span>
-      </a>
-    </>
-  );
-
   // Desktop rail: icon-only from md, labelled from lg. Below md it is gone
   // entirely — an unlabelled 80px rail ate a fifth of a phone screen.
   const Sidebar = () => (
     <div className="hidden md:flex w-20 lg:w-64 bg-paper2 border-r border-rule flex-col h-full shrink-0 transition-all duration-300">
-      <a href="#landing" className="p-6 flex items-center gap-3" title="go to landing page">
+      <button type="button" onClick={() => goToTab('dashboard')} className="p-6 flex items-center gap-3 text-left" title="clip generator">
         <div className="w-8 h-8 bg-paper3 rounded-input flex items-center justify-center shrink-0 overflow-hidden border border-rule">
-          <img src="/logo-openshorts.png" alt="Logo" className="w-full h-full object-cover" />
+          <img src="/logo-autoshortscut.png" alt="Logo" className="w-full h-full object-cover" />
         </div>
-        <span className="font-display lowercase text-lg text-ink hidden lg:block">openshorts</span>
-      </a>
+        <span className="font-display lowercase text-lg text-ink hidden lg:block">autoshortscut</span>
+      </button>
 
       <nav className="px-4 py-4 space-y-1 shrink-0">
         {navItems.map((item) => {
@@ -1431,8 +1499,8 @@ function App() {
       </div>
       <div className="flex-1 lg:hidden" />
 
-      <div className="p-4 border-t border-rule space-y-1">
-        <NavFooterLinks collapsed />
+      <div className="p-4 border-t border-rule">
+        <StatusDock onOpen={openProject} />
       </div>
     </div>
   );
@@ -1452,12 +1520,12 @@ function App() {
       />
       <div className="relative w-[17rem] max-w-[82vw] h-full bg-paper2 border-r border-rule flex flex-col animate-slide-in-left">
         <div className="flex items-center justify-between px-5 h-14 border-b border-rule shrink-0">
-          <a href="#landing" className="flex items-center gap-2.5" onClick={() => setNavOpen(false)}>
+          <button type="button" className="flex items-center gap-2.5" onClick={() => { setNavOpen(false); goToTab('dashboard'); }}>
             <div className="w-7 h-7 bg-paper3 rounded-input overflow-hidden border border-rule shrink-0">
-              <img src="/logo-openshorts.png" alt="" className="w-full h-full object-cover" />
+              <img src="/logo-autoshortscut.png" alt="" className="w-full h-full object-cover" />
             </div>
-            <span className="font-display lowercase text-lg text-ink">openshorts</span>
-          </a>
+            <span className="font-display lowercase text-lg text-ink">autoshortscut</span>
+          </button>
           <button
             onClick={() => setNavOpen(false)}
             aria-label="close navigation"
@@ -1494,8 +1562,8 @@ function App() {
           })}
         </nav>
 
-        <div className="px-3 py-3 border-t border-rule space-y-0.5 safe-bottom shrink-0">
-          <NavFooterLinks />
+        <div className="px-3 py-3 border-t border-rule safe-bottom shrink-0">
+          <StatusDock onOpen={(id) => { setNavOpen(false); openProject(id); }} />
         </div>
       </div>
     </div>
@@ -1564,7 +1632,7 @@ function App() {
               <Menu size={20} />
             </button>
             <span data-tutorial="nav-clips" className="md:hidden font-display lowercase text-base text-ink truncate">
-              {activeNav?.label || 'openshorts'}
+              {activeNav?.label || 'autoshortscut'}
             </span>
             {status !== 'idle' && (
               <button
@@ -1621,13 +1689,9 @@ function App() {
               >
                 <AlertTriangle size={12} />
                 <span className="hidden md:inline">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Gemini & Upload-Post keys missing'
-                    : !geminiOk
-                      ? 'Gemini API Key Missing'
-                      : 'Upload-Post API Key Missing'}
+                  no AI model set up
                 </span>
-                <span className="md:hidden">keys missing</span>
+                <span className="md:hidden">no AI model</span>
               </button>
             )}
           </div>
@@ -1639,13 +1703,9 @@ function App() {
             <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 text-sm text-ink2 min-w-0 flex-1">
               <KeyRound size={16} className="shrink-0 text-warn mt-0.5 sm:mt-0" />
               <div className="min-w-0">
-                <span className="font-medium text-ink">Required API keys missing.</span>{' '}
+                <span className="font-medium text-ink">No AI model set up.</span>{' '}
                 <span className="text-muted">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Set your Gemini and Upload-Post API keys to use OpenShorts.'
-                    : !geminiOk
-                      ? 'Set your Gemini API key to use OpenShorts.'
-                      : 'Set your Upload-Post API key to use OpenShorts.'}
+                  Add a key and a model under Settings → AI models; it picks the moments and writes the titles.
                 </span>
               </div>
             </div>
@@ -2183,15 +2243,75 @@ function App() {
                   </div>
                 )}
 
+                {status === 'complete' && results?.clips?.length > 0 && (
+                  <div className="mb-3 shrink-0 flex flex-wrap items-center gap-1.5">
+                    {[['all', 'all'], ['todo', 'to edit'], ['done', 'done'], ['scheduled', 'scheduled'], ['published', 'published'], ['rejected', 'rejected']].map(([key, label]) => (
+                      (key === 'all' || clipCounts[key] > 0) && (
+                        <button key={key} type="button" onClick={() => setClipFilter(key)}
+                          className={`px-2.5 py-1 rounded-full text-xs transition-colors ${clipFilter === key ? 'bg-brass text-black' : 'bg-paper3 text-muted hover:text-ink2'}`}>
+                          {label} <span className="readout opacity-70">{clipCounts[key]}</span>
+                        </button>
+                      )
+                    ))}
+                    <select value={clipSort} onChange={(e) => setClipSort(e.target.value)}
+                      className="ml-auto bg-paper3 text-xs text-ink2 rounded-full px-2.5 py-1 border border-rule">
+                      <option value="score">by score</option>
+                      <option value="order">by video order</option>
+                    </select>
+                    <button type="button" title="select everything listed"
+                      onClick={() => setSelectedIdx((prev) => (prev.size === visibleClips.length && visibleClips.length > 0
+                        ? new Set() : new Set(visibleClips.map(({ index }) => index))))}
+                      className="px-2.5 py-1 rounded-full text-xs bg-paper3 text-muted hover:text-ink2">
+                      {selectedIdx.size > 0 && selectedIdx.size === visibleClips.length ? 'select none' : 'select all'}
+                    </button>
+                  </div>
+                )}
+                {selectedIdx.size > 0 && (
+                  <div className="mb-3 shrink-0 flex flex-wrap items-center gap-2 px-3 py-2 rounded-input bg-paper3 border border-brass/40 text-xs">
+                    <span className="text-ink2 mr-auto">{selectedIdx.size} selected</span>
+                    <button type="button" disabled={bulkBusy} onClick={() => bulkMeta({ done: true })} className="btn-ghost px-2.5 py-1 text-xs">
+                      <Check size={12} /> mark done
+                    </button>
+                    {clipFilter === 'rejected' ? (
+                      <button type="button" disabled={bulkBusy} onClick={() => bulkMeta({ rejected: false })} className="btn-ghost px-2.5 py-1 text-xs">
+                        <RotateCcw size={12} /> restore
+                      </button>
+                    ) : (
+                      <button type="button" disabled={bulkBusy} onClick={() => bulkMeta({ rejected: true })} className="btn-ghost px-2.5 py-1 text-xs">
+                        <X size={12} /> reject
+                      </button>
+                    )}
+                    <button type="button" disabled={bulkBusy}
+                      onClick={() => setScheduleSubset(rankedClips
+                        .filter(({ index }) => selectedIdx.has(index))
+                        .sort((a, b) => a.index - b.index)
+                        .map(({ clip, index }) => ({ ...clip, _index: index })))}
+                      className="btn-primary px-2.5 py-1 text-xs">
+                      <Calendar size={12} /> schedule selected
+                    </button>
+                    <button type="button" onClick={() => setSelectedIdx(new Set())} className="text-muted hover:text-ink2 px-1" aria-label="clear selection">
+                      <X size={14} />
+                    </button>
+                    {bulkBusy && <Loader2 size={14} className="animate-spin text-brass" />}
+                  </div>
+                )}
+
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-1">
                   {results && results.clips && results.clips.length > 0 ? (
                     <div className={`grid gap-4 pb-10 ${status === 'complete' ? 'grid-cols-[repeat(auto-fill,minmax(min(100%,600px),1fr))]' : 'grid-cols-1'}`}>
-                      {rankedClips.map(({ clip, index: i }) => (
+                      {visibleClips.length === 0 && (
+                        <p className="text-sm text-muted py-8 text-center col-span-full">No clips here.</p>
+                      )}
+                      {visibleClips.map(({ clip, index: i }) => (
                         <ResultCard
                           key={`${jobId}-${i}-${clip.video_url || ''}`}
                           clip={clip}
                           index={i}
                           jobId={jobId}
+                          selected={selectedIdx.has(i)}
+                          onSelect={status === 'complete' ? toggleSelect : null}
+                          onOpenFocus={status === 'complete' ? (idx) => setFocusIdx(idx) : null}
+                          onClipPatch={patchClip}
                           onEditClip={(index) => setEditingClip(index)}
                           onReframeClip={(index) => setReframingClip(index)}
                           onUpgrade={isManaged ? openUpsell : null}
@@ -2249,11 +2369,7 @@ function App() {
         isOpen={showKeyModal}
         onClose={() => setShowKeyModal(false)}
         eyebrow="SETUP"
-        title={!geminiOk && !uploadPostKey
-          ? 'Required API Keys Missing'
-          : !geminiOk
-            ? 'Gemini API Key Required'
-            : 'Upload-Post API Key Required'}
+        title="No AI model set up"
         footer={
           <div className="flex gap-3">
             <button
@@ -2271,70 +2387,10 @@ function App() {
           </div>
         }
       >
-        <div className="space-y-4">
-          <p className="text-sm text-muted">
-            OpenShorts needs both a <strong className="text-ink2">Gemini</strong> API key and an <strong className="text-ink2">Upload-Post</strong> API key. Both have free tiers.
-          </p>
-
-          {/* Gemini block */}
-          <div className={`rounded-input p-4 space-y-2 border ${!apiKey ? 'border-rule2' : 'border-rule opacity-70'}`}>
-            <p className="text-xs font-medium text-ink flex items-center gap-2">
-              {apiKey ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
-              Gemini API Key {apiKey && <span className="text-ok">— set</span>}
-            </p>
-            {!apiKey && (
-              <>
-                <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
-                  <li>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-brass underline">aistudio.google.com/app/apikey</a></li>
-                  <li>Sign in with your Google account</li>
-                  <li>Click "Create API Key"</li>
-                  <li>Copy the key and paste it below</li>
-                </ol>
-                <input
-                  type="text"
-                  placeholder="Paste your Gemini API key here..."
-                  className="input-field"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                      setApiKey(e.target.value.trim());
-                    }
-                  }}
-                />
-              </>
-            )}
-          </div>
-
-          {/* Upload-Post block */}
-          <div className={`rounded-input p-4 space-y-2 border ${!uploadPostKey ? 'border-rule2' : 'border-rule opacity-70'}`}>
-            <p className="text-xs font-medium text-ink flex items-center gap-2">
-              {uploadPostKey ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
-              Upload-Post API Key {uploadPostKey && <span className="text-ok">— set</span>}
-            </p>
-            {!uploadPostKey && (
-              <>
-                <p className="text-xs text-muted">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts. Free tier available, no credit card needed.
-                </p>
-                <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
-                  <li>Register at <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="text-brass underline">app.upload-post.com</a></li>
-                  <li>Connect your TikTok, Instagram, or YouTube accounts</li>
-                  <li>Go to <a href="https://app.upload-post.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-brass underline">API Keys</a> and generate one</li>
-                  <li>Paste it below</li>
-                </ol>
-                <input
-                  type="text"
-                  placeholder="Paste your Upload-Post API key here..."
-                  className="input-field"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                      setUploadPostKey(e.target.value.trim());
-                    }
-                  }}
-                />
-              </>
-            )}
-          </div>
-        </div>
+        <p className="text-sm text-muted">
+          Clipping needs one AI model to pick the moments and write titles: Claude, Gemini, Groq, OpenAI,
+          OpenRouter or any OpenAI-compatible server. Add its key and model under Settings → AI models.
+        </p>
       </Modal>
 
       <ScheduleWeekModal
@@ -2345,7 +2401,73 @@ function App() {
         uploadPostKey={uploadPostKey}
         uploadUserId={uploadUserId}
         isManaged={isManaged}
+        onScheduled={refreshResults}
       />
+      <ScheduleWeekModal
+        isOpen={!!scheduleSubset}
+        onClose={() => { setScheduleSubset(null); setSelectedIdx(new Set()); }}
+        clips={scheduleSubset || []}
+        jobId={jobId}
+        onScheduled={refreshResults}
+      />
+
+      {/* Clip workspace: one clip, big preview, keyboard driven. Sits under the
+          editors (ReframeEditor is z-50) so they open on top of it. */}
+      {focusIdx !== null && results?.clips?.[focusIdx] && (() => {
+        const pos = visibleClips.findIndex(({ index }) => index === focusIdx);
+        const clip = results.clips[focusIdx];
+        return (
+          <div className="fixed inset-0 z-40 bg-paper/95 backdrop-blur-sm flex flex-col animate-fade">
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-rule shrink-0">
+              <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs">
+                <X size={14} /> close
+              </button>
+              <span className="readout text-xs text-muted">
+                clip #{focusIdx + 1}{pos >= 0 ? ` · ${pos + 1} of ${visibleClips.length}` : ''} · {clipStatus(clip).replace('todo', 'to edit')}
+              </span>
+              <span className="hidden lg:block ml-auto text-[11px] text-muted readout">
+                space/K play · J/L ±2s · ←/→ clip · 1 trim · 2 frame · 3 subtitles · 4 hook · O done · S safe zone · H before/after · Esc close
+              </span>
+              <div className="flex gap-1.5 ml-auto lg:ml-3">
+                <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs">
+                  <ChevronLeft size={14} /> prev
+                </button>
+                <button type="button" onClick={() => stepFocus(1)} disabled={pos < 0 || pos >= visibleClips.length - 1} className="btn-ghost px-2.5 py-1.5 text-xs">
+                  next <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6">
+              <div className="max-w-6xl mx-auto md:h-full">
+                <ResultCard
+                  key={`focus-${jobId}-${focusIdx}-${clip.video_url || ''}`}
+                  clip={clip}
+                  index={focusIdx}
+                  jobId={jobId}
+                  focus
+                  command={focusCmd}
+                  onClipPatch={patchClip}
+                  onEditClip={(index) => setEditingClip(index)}
+                  onReframeClip={(index) => setReframingClip(index)}
+                  durable={durableClips[focusIdx]}
+                  uploadPostKey={uploadPostKey}
+                  uploadUserId={uploadUserId}
+                  geminiApiKey={apiKey}
+                  elevenLabsKey={elevenLabsKey}
+                  isManaged={isManaged}
+                  onPlay={(time) => handleClipPlay(time)}
+                  onPause={handleClipPause}
+                  onBulkSubtitle={handleBulkSubtitles}
+                  clipCount={results.clips.length}
+                  bulkProgress={bulkSub}
+                  onBulkHook={handleBulkHooks}
+                  bulkHookProgress={bulkHook}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Pre-flight quality gate */}
       {qualityGate && (
