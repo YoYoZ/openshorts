@@ -57,7 +57,8 @@ DEFAULTS = {
         "language": "",                  # "" = detect
         "glossary": "",                  # names/terms, one per line or comma separated
     },
-    "clips": {"min_seconds": 15, "max_seconds": 60, "count_min": None, "count_max": None},
+    "clips": {"min_seconds": 15, "max_seconds": 60, "count_min": None, "count_max": None,
+              "punch_in": False, "speaker_cut": False},
     "subtitle_defaults": {
         "style": "karaoke", "position": "bottom", "font_name": "Montserrat ExtraBold",
         "font_size": 44, "font_color": "#FFFFFF", "highlight_color": "#FFE500",
@@ -72,6 +73,14 @@ DEFAULTS = {
         "default_time": "18:00", "timezone": "Europe/Kyiv", "cadence": "daily",
     },
     "download": {"youtube_cookies": ""},
+    # Disk housekeeping (render_gc.py and app.cleanup_jobs). Deleting whole
+    # projects is off by default: nothing local backs them up.
+    "storage": {
+        "gc_enabled": True,          # remove superseded renders
+        "keep_previous_hours": 24,   # renders younger than this stay (before/after)
+        "retention_days": 0,         # delete untouched projects after N days; 0 = never
+        "max_output_gb": 0,          # delete oldest projects above this size; 0 = no cap
+    },
 }
 
 
@@ -172,6 +181,8 @@ def save_section(section, value):
                 "period": e.get("period") if e.get("period") in ("day", "month", "total") else "month",
                 "price_in": max(0.0, float(e.get("price_in") or 0)),
                 "price_out": max(0.0, float(e.get("price_out") or 0)),
+                # Can it read images? None = try it (a failure hands over).
+                "vision": e.get("vision") if e.get("vision") in (True, False) else None,
             })
         data["llm_chain"] = chain
     else:
@@ -274,6 +285,11 @@ def child_env(env):
         env["CLIP_TARGET_MIN"] = str(c["count_min"])
     if c.get("count_max"):
         env["CLIP_TARGET_MAX"] = str(c["count_max"])
+    if c.get("punch_in"):
+        env["PUNCH_IN"] = "1"
+    if c.get("speaker_cut"):
+        env["SPEAKER_SIGNAL"] = "1"
+        env["SPEAKER_CUT"] = "1"
     env["AUTO_CAPTION_STYLE_JSON"] = json.dumps(data["subtitle_defaults"])
     h = data["hook_defaults"]
     for key, var in (("style", "AUTO_HOOK_STYLE"), ("font", "AUTO_HOOK_FONT"),

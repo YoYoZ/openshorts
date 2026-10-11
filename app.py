@@ -284,7 +284,7 @@ def gemini_missing_error():
     if BILLING_ENABLED:
         return payment_required(
             "no_plan", "This action needs an active OpenShorts plan (or the user's own API key).")
-    return HTTPException(status_code=400, detail="Missing X-Gemini-Key header")
+    return HTTPException(status_code=400, detail="No AI model configured (Settings → AI models)")
 
 
 # Probe rate limiter. In-memory, resets on restart by design — the hard monthly
@@ -1660,6 +1660,65 @@ def _job_is_active(job_id, now=None) -> bool:
     return age <= ACTIVE_JOB_MAX_SECONDS
 
 
+def _storage_settings():
+    """Disk housekeeping from Settings → Storage (self-host); the env knobs on
+    the hosted edition."""
+    if BILLING_ENABLED:
+        return {"gc_enabled": True, "keep_previous_hours": 24,
+                "retention_days": JOB_RETENTION_SECONDS / 86400, "max_output_gb": OUTPUT_MAX_GB}
+    try:
+        import settings_store
+        return settings_store.load()["storage"]
+    except Exception:
+        return {"gc_enabled": False, "keep_previous_hours": 24, "retention_days": 0, "max_output_gb": 0}
+
+
+def _retention_seconds():
+    return float(_storage_settings().get("retention_days") or 0) * 86400
+
+
+def _busy_rendering(job_id) -> bool:
+    return bool(render_ops.snapshot(job_id))
+
+
+def _has_upcoming_post(job_path) -> bool:
+    """A project with a clip scheduled on YouTube for later is never expired."""
+    from datetime import datetime
+    for meta in glob.glob(os.path.join(glob.escape(job_path), "*_metadata.json")):
+        try:
+            with open(meta, encoding="utf-8") as f:
+                clips = json.load(f).get("shorts") or []
+        except (OSError, ValueError):
+            continue
+        for c in clips:
+            at = (c.get("youtube") or {}).get("publish_at")
+            try:
+                if at and datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp() > time.time():
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _gc_project(job_id, keep_hours=None, dry_run=False):
+    """Superseded renders of one project (render_gc.py). None when skipped."""
+    import render_gc
+    job_path = os.path.join(OUTPUT_DIR, job_id)
+    if not os.path.isdir(job_path) or _job_is_active(job_id) or _busy_rendering(job_id):
+        return None
+    metas = glob.glob(os.path.join(glob.escape(job_path), "*_metadata.json"))
+    if not metas:
+        return None
+    try:
+        with open(metas[0], encoding="utf-8") as f:
+            clips = json.load(f).get("shorts") or []
+    except (OSError, ValueError):
+        return None
+    if keep_hours is None:
+        keep_hours = float(_storage_settings().get("keep_previous_hours") or 0)
+    return render_gc.collect(job_path, clips, keep_hours=keep_hours, dry_run=dry_run)
+
+
 def _upload_job_id(filename: str) -> str:
     """Source uploads are stored as ``<job_id>_<name>``."""
     return filename.split("_", 1)[0]
@@ -1675,11 +1734,14 @@ def _sweep_expired_job_dirs(now):
         job_path = os.path.join(OUTPUT_DIR, job_id)
         if not os.path.isdir(job_path):
             continue
+        retention = _retention_seconds()
+        if retention <= 0:
+            return
         try:
-            expired = now - os.path.getmtime(job_path) > JOB_RETENTION_SECONDS
+            expired = now - os.path.getmtime(job_path) > retention
         except OSError:
             continue
-        if not expired or _job_is_active(job_id, now):
+        if not expired or _job_is_active(job_id, now) or _has_upcoming_post(job_path):
             continue
         print(f"🧹 Purging old job: {job_id}")
         shutil.rmtree(job_path, ignore_errors=True)
@@ -1689,10 +1751,13 @@ def _sweep_expired_job_dirs(now):
 def _sweep_expired_uploads(now):
     """Drop source uploads older than JOB_RETENTION_SECONDS, except the source
     of a job that is still queued or running."""
+    retention = _retention_seconds()
+    if retention <= 0:
+        return
     for filename in os.listdir(UPLOAD_DIR):
         file_path = os.path.join(UPLOAD_DIR, filename)
         try:
-            if (now - os.path.getmtime(file_path) > JOB_RETENTION_SECONDS
+            if (now - os.path.getmtime(file_path) > retention
                     and not _job_is_active(_upload_job_id(filename), now)):
                 os.remove(file_path)
         except Exception:
@@ -1706,7 +1771,9 @@ def _enforce_uploads_size_cap():
     but they're the biggest files on disk — up to MAX_FILE_SIZE_MB each.
     """
     cap = UPLOADS_MAX_GB * 1024 ** 3
-    if cap <= 0:
+    # An upload is the only copy of that project's source (recut needs it):
+    # trim uploads only when the user turned on a project size cap too.
+    if cap <= 0 or not float(_storage_settings().get("max_output_gb") or 0):
         return
     used = _dir_size(UPLOAD_DIR)
     if used <= cap:
@@ -1733,8 +1800,10 @@ def _enforce_uploads_size_cap():
 
 
 def _enforce_output_size_cap():
-    """Delete the oldest job dirs while OUTPUT_DIR is over OUTPUT_MAX_GB."""
-    cap = OUTPUT_MAX_GB * 1024 ** 3
+    """Delete the oldest job dirs while OUTPUT_DIR is over the size cap
+    (Settings → Storage; 0 = no cap, the default)."""
+    cap_gb = float(_storage_settings().get("max_output_gb") or 0)
+    cap = cap_gb * 1024 ** 3
     if cap <= 0:
         return
     used = _dir_size(OUTPUT_DIR)
@@ -1746,13 +1815,13 @@ def _enforce_output_size_cap():
         if job_id == thumbs:
             continue
         p = os.path.join(OUTPUT_DIR, job_id)
-        if os.path.isdir(p) and not _job_is_active(job_id):
+        if os.path.isdir(p) and not _job_is_active(job_id) and not _has_upcoming_post(p):
             try:
                 candidates.append((os.path.getmtime(p), p, job_id))
             except OSError:
                 pass
     candidates.sort()  # oldest first
-    print(f"🧹 Output dir at {used / 1024**3:.1f} GB (cap {OUTPUT_MAX_GB} GB) — trimming.")
+    print(f"🧹 Output dir at {used / 1024**3:.1f} GB (cap {cap_gb:g} GB) — trimming.")
     for _mtime, path, job_id in candidates:
         if used <= cap:
             break
@@ -1816,6 +1885,15 @@ async def cleanup_jobs():
             # on demand, so this only costs a re-download.
             _enforce_output_size_cap()
             _enforce_uploads_size_cap()
+
+            if _storage_settings().get("gc_enabled"):
+                freed = 0
+                for job_id in os.listdir(OUTPUT_DIR):
+                    if _UUID_DIR.match(job_id):
+                        r = await asyncio.to_thread(_gc_project, job_id)
+                        freed += (r or {}).get("bytes", 0)
+                if freed:
+                    print(f"🧹 Removed superseded renders: {freed / 1024**2:.0f} MB")
 
             # Cleanup SaaSShorts jobs from memory
             try:
@@ -2916,7 +2994,7 @@ async def get_config():
         "youtubeUrlEnabled": not DISABLE_YOUTUBE_URL,
         "billingEnabled": BILLING_ENABLED,
         "googleAuthEnabled": bool(BILLING_ENABLED and cloud.settings.google_auth_enabled),
-        "jobRetentionSeconds": JOB_RETENTION_SECONDS,
+        "jobRetentionSeconds": int(_retention_seconds()),
         # Self-host only: tells the dashboard the Gemini key is optional
         # because the moment picker runs on an OpenAI-compatible server.
         "localLlm": None if BILLING_ENABLED else _llm_describe(),
@@ -3367,6 +3445,10 @@ async def process_endpoint(
     env.update(chosen)
     if chosen:
         print(f"[layouts] job={job_id} enabled={sorted(chosen)}")
+    elif not layouts and not BILLING_ENABLED:
+        # "Auto (AI picks per video)" in the form sends no layout: that is
+        # the layout picker (layout_picker.py), which is off unless asked for.
+        env["AUTO_LAYOUT"] = "1"
 
     # Auto-hook: burn each clip's Gemini hook text during the render. Off when
     # the field is absent, so API/MCP/webhook callers keep their old output
@@ -4170,6 +4252,48 @@ async def clip_ops(job_id: str):
     return render_ops.snapshot(job_id)
 
 
+@app.get("/api/storage")
+async def storage_usage():
+    """Disk used per project and what the render cleaner could free now."""
+    def scan():
+        out, total = [], 0
+        for job_id in os.listdir(OUTPUT_DIR):
+            if not _UUID_DIR.match(job_id):
+                continue
+            path = os.path.join(OUTPUT_DIR, job_id)
+            size = _dir_size(path)
+            total += size
+            r = _gc_project(job_id, keep_hours=0, dry_run=True)
+            out.append({"job_id": job_id, "title": _job_title(job_id), "bytes": size,
+                        "reclaimable": (r or {}).get("bytes", 0), "busy": r is None})
+        out.sort(key=lambda p: p["bytes"], reverse=True)
+        return {"total_bytes": total, "reclaimable": sum(p["reclaimable"] for p in out),
+                "output_dir": OUTPUT_DIR, "projects": out}
+    return await asyncio.to_thread(scan)
+
+
+class StorageCleanRequest(BaseModel):
+    job_id: Optional[str] = None
+
+
+@app.post("/api/storage/clean")
+async def storage_clean(req: StorageCleanRequest):
+    """Remove superseded renders now (one project, or all), ignoring the
+    keep-previous window. Projects that are rendering are skipped."""
+    ids = [req.job_id] if req.job_id else [j for j in os.listdir(OUTPUT_DIR) if _UUID_DIR.match(j)]
+    if req.job_id and not _UUID_DIR.match(req.job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    freed = files = skipped = 0
+    for job_id in ids:
+        r = await asyncio.to_thread(_gc_project, job_id, 0)
+        if r is None:
+            skipped += 1
+            continue
+        freed += r["bytes"]
+        files += r["files"]
+    return {"bytes": freed, "files": files, "skipped": skipped}
+
+
 def _job_title(job_id):
     job_path = os.path.join(OUTPUT_DIR, job_id)
     if not os.path.isdir(job_path):
@@ -4641,7 +4765,8 @@ async def edit_clip(
     body_key = None if BILLING_ENABLED else req.api_key
     final_api_key = body_key or await resolve_gemini(request)
 
-    if not final_api_key:
+    import llm_backend
+    if not final_api_key and not llm_backend.available():
         raise gemini_missing_error()
 
     await _ensure_job_files(req.job_id, request)
@@ -5679,7 +5804,8 @@ async def generate_effects_config(
     """Generate structured EffectsConfig JSON for Remotion rendering via Gemini AI."""
     final_api_key = await resolve_gemini(request)
 
-    if not final_api_key:
+    import llm_backend
+    if not final_api_key and not llm_backend.available():
         raise gemini_missing_error()
 
     await _ensure_job_files(req.job_id, request)

@@ -26,9 +26,54 @@ class EditPlan(BaseModel):
     edits: List[EditDecision]
 
 
+class EffectSegment(BaseModel):
+    startSec: float
+    endSec: float
+    zoom: float = 1.0
+    zoomCenterX: float = 0.5
+    zoomCenterY: float = 0.5
+    brightness: float = 1.0
+    contrast: float = 1.0
+    saturate: float = 1.0
+
+
+class EffectsConfig(BaseModel):
+    segments: List[EffectSegment]
+
+
+class RepairedFilter(BaseModel):
+    filter_string: str
+
+
+def _frames_for_chain(video_path, max_frames=24):
+    """Timestamped frames standing in for a video upload (any vision model)."""
+    import hook_grounding
+    try:
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=nw=1:nk=1", video_path],
+                               capture_output=True, text=True, timeout=60)
+        duration = float(probe.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        duration = 0.0
+    n = max(4, min(max_frames, int(duration // 2) or 4))
+    step = (duration or n) / n
+    times = [round(i * step + step / 2, 2) for i in range(n)]
+    frames = hook_grounding.frames_at(video_path, times, width=384, keep_missing=True)
+    return {"frames": [(t, f) for t, f in zip(times, frames) if f]}
+
+
+def _timeline(media):
+    return ("You cannot watch the video; the attached images are frames from it, in order, at "
+            + ", ".join(f"{t:.1f}s" for t, _ in media["frames"]) + ". ")
+
+
 class VideoEditor:
-    def __init__(self, api_key):
-        self.client = genai.Client(api_key=api_key)
+    def __init__(self, api_key=None):
+        import llm_backend
+        # The Settings model chain when there is one; Gemini's SDK (video
+        # upload) only when it is the sole model available.
+        self.use_chain = llm_backend.active() or not api_key
+        self.client = None if self.use_chain else genai.Client(api_key=api_key)
         self.model_name = (
             os.environ.get("GEMINI_MODEL_EDITOR")
             or os.environ.get("GEMINI_MODEL")
@@ -36,7 +81,10 @@ class VideoEditor:
         )
 
     def upload_video(self, video_path):
-        """Uploads video to Gemini File API."""
+        """Uploads video to Gemini File API (or samples frames for the chain)."""
+        if self.use_chain:
+            print("🖼️ Sampling frames for the model chain…")
+            return _frames_for_chain(video_path)
         print(f"📤 Uploading {video_path} to Gemini...")
         
         # Ensure we are passing a path that exists
@@ -76,6 +124,8 @@ class VideoEditor:
         describes the code. Best-effort: an editing job must not fail because
         the cleanup call did.
         """
+        if isinstance(video_file_obj, dict):
+            return
         name = getattr(video_file_obj, "name", None)
         if not name:
             return
@@ -132,6 +182,14 @@ class VideoEditor:
         If no effects genuinely improve the video, return {{"edits": []}}.
         """
 
+        if self.use_chain:
+            import llm_backend
+            print("🤖 Asking the model chain for an edit decision list...")
+            plan, _ = llm_backend.generate_json(_timeline(video_file_obj) + prompt, EditPlan,
+                                                images=[f for _, f in video_file_obj["frames"]])
+            raw_edits = (plan or {}).get("edits") or []
+            return self._finish_edits(raw_edits, duration, fps, width, height, has_captions)
+
         print("🤖 Asking Gemini for an edit decision list...")
         # Low media resolution: Gemini samples at 1 FPS and normalizes frames to
         # fixed token sizes, so "low" (~70 tokens/frame) cuts video-input cost
@@ -170,7 +228,10 @@ class VideoEditor:
         raw_edits = self._extract_edits(response)
         if raw_edits is None:
             return None
+        return self._finish_edits(raw_edits, duration, fps, width, height, has_captions)
 
+    @staticmethod
+    def _finish_edits(raw_edits, duration, fps, width, height, has_captions):
         filter_string, applied = build_filter_string(
             raw_edits, duration=duration, fps=fps, width=width, height=height,
             has_captions=has_captions,
@@ -237,6 +298,13 @@ class VideoEditor:
             ]
         }}
         """
+
+        if self.use_chain:
+            import llm_backend
+            print("🤖 Asking the model chain for Remotion effects config...")
+            cfg, _ = llm_backend.generate_json(_timeline(video_file_obj) + prompt, EffectsConfig,
+                                               images=[f for _, f in video_file_obj["frames"]])
+            return cfg
 
         print("🤖 Asking Gemini for Remotion effects config...")
         response = self.client.models.generate_content(
@@ -386,6 +454,18 @@ class VideoEditor:
     def _repair_filter(self, filter_string, error_text, width, height):
         """One self-repair round-trip: show Gemini the FFmpeg error and ask for
         a corrected filter string. Returns the new string or None."""
+        if self.use_chain:
+            import llm_backend
+            try:
+                fixed, _ = llm_backend.generate_json(
+                    f"This FFmpeg -vf filter fails. FILTER: {filter_string} ERROR: {error_text} "
+                    f"Fix it, same intent; output size {width}x{height} (zoompan s={width}x{height}), "
+                    "no bare comparison operators, expression values in single quotes.",
+                    RepairedFilter)
+                return (fixed or {}).get("filter_string") or None
+            except Exception as e:
+                print(f"⚠️ Filter self-repair failed: {e}")
+                return None
         if not self.client:
             return None
         prompt = f"""

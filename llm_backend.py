@@ -11,9 +11,11 @@ Two ways to configure it:
 * ``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY``: one endpoint (Ollama,
   LM Studio, vLLM, llama.cpp, OpenRouter, Anthropic, Groq, Gemini...).
 
-What stays on Gemini's own SDK, because it needs a model that can look at
-frames: the layout picker, the on-screen content detector and the silent-video
-path. Without a Gemini key those degrade as before.
+Frames: ``generate_json(..., images=[jpeg bytes])`` sends them as image parts
+(the layout picker, hook grounding, burned-subtitle and screen detection all go
+through here). A chain entry with ``"vision": false`` is skipped for those
+calls; a text-only model that errors on images simply hands over to the next.
+With no chain and no endpoint but a GEMINI_API_KEY, calls go to Gemini's SDK.
 
 Structured output: the request first asks for ``json_schema``; a server that
 rejects that gets ``json_object``, then no ``response_format`` at all. The
@@ -42,11 +44,32 @@ _PRICES_PER_MTOK = {
 
 
 def chain() -> List[dict]:
+    raw = os.environ.get("LLM_CHAIN_JSON")
+    if raw is None:
+        # The API process is not started with the chain in its environment
+        # (job processes are): read it from the Settings store directly.
+        try:
+            import settings_store
+            raw = settings_store.child_env({}).get("LLM_CHAIN_JSON")
+        except Exception:
+            raw = None
     try:
-        entries = json.loads(os.environ.get("LLM_CHAIN_JSON") or "[]")
+        entries = json.loads(raw or "[]")
         return [e for e in entries if isinstance(e, dict) and e.get("base_url") and e.get("model")]
     except ValueError:
         return []
+
+
+def available() -> bool:
+    """Any model at all: the chain, one endpoint, or a Gemini key."""
+    return active() or bool(os.environ.get("GEMINI_API_KEY"))
+
+
+def _image_parts(images):
+    import base64
+    return [{"type": "image_url",
+             "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(b).decode("ascii")}}
+            for b in images or []]
 
 
 def provider() -> str:
@@ -115,15 +138,20 @@ def _is_format_rejection(resp: httpx.Response) -> bool:
         or "format" in body
 
 
-def _call(base: str, key: str, model: str, prompt: str, schema: Type[BaseModel]):
+def _call(base: str, key: str, model: str, prompt: str, schema: Type[BaseModel], images=None):
     """One JSON chat completion against one endpoint. Returns (validated, usage)."""
     import gemini_worker  # local import: keeps this module free of the google SDK
 
     url = f"{base.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {key or 'ollama'}", "Content-Type": "application/json"}
+    content = ([{"type": "text", "text": prompt}, *_image_parts(images)] if images else prompt)
+    # The schema also goes in the prompt: several OpenAI-compatible endpoints
+    # (Anthropic's among them) accept response_format but do not enforce it.
+    system = ("You answer with a single JSON object and nothing else. It must match this JSON "
+              "schema exactly (same field names): " + json.dumps(schema.model_json_schema()))
     messages = [
-        {"role": "system", "content": "You answer with a single JSON object and nothing else."},
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system},
+        {"role": "user", "content": content},
     ]
     last_rejection: Optional[str] = None
     with _client() as client:
@@ -173,8 +201,23 @@ def _cost(usage: dict, model: str, price_in: float, price_out: float, provider_n
     }
 
 
+def _gemini_sdk(prompt, schema, images):
+    """Fallback when only GEMINI_API_KEY is set (no chain, no endpoint)."""
+    from google import genai
+    from google.genai import types as gt
+    import gemini_worker
+    model = os.environ.get("GEMINI_MODEL") or "gemini-3.1-flash-lite"
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    parts = [gt.Part.from_bytes(data=b, mime_type="image/jpeg") for b in images or []]
+    response = client.models.generate_content(
+        model=model, contents=[*parts, prompt],
+        config=gt.GenerateContentConfig(response_mime_type="application/json", response_schema=schema))
+    parsed = gemini_worker._parse_json_response_text(response.text or "")
+    return schema.model_validate(parsed).model_dump(), gemini_worker._calculate_cost_analysis(response, model)
+
+
 def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = None,
-                  ) -> Tuple[dict, Optional[dict]]:
+                  images: Optional[List[bytes]] = None) -> Tuple[dict, Optional[dict]]:
     """One chat completion that must come back as JSON matching ``schema``.
 
     Returns ``(parsed_dict, cost_analysis)`` in the shape
@@ -182,6 +225,8 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
     failed (or, in a chain, was over budget); the retry policy is the caller's.
     """
     entries = chain()
+    if not entries and not base_url() and os.environ.get("GEMINI_API_KEY"):
+        return _gemini_sdk(prompt, schema, images)
     if not entries:
         model = model or model_name()
         p_in, p_out = _PRICES_PER_MTOK.get(model, (0.0, 0.0))
@@ -190,7 +235,7 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
             p_out = float(os.environ.get("LLM_PRICE_OUTPUT") or p_out)
         except ValueError:
             pass
-        validated, usage = _call(base_url(), os.environ.get("LLM_API_KEY", ""), model, prompt, schema)
+        validated, usage = _call(base_url(), os.environ.get("LLM_API_KEY", ""), model, prompt, schema, images)
         return validated, _cost(usage, model, p_in, p_out, "openai-compatible")
 
     import settings_store
@@ -203,8 +248,11 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
         if budget > 0 and spent >= budget:
             problems.append(f"{label} over budget (${spent:.2f} of ${budget:.2f})")
             continue
+        if images and e.get("vision") is False:
+            problems.append(f"{label} cannot see images")
+            continue
         try:
-            validated, usage = _call(e["base_url"], e.get("key", ""), e["model"], prompt, schema)
+            validated, usage = _call(e["base_url"], e.get("key", ""), e["model"], prompt, schema, images)
         except Exception as exc:
             problems.append(f"{label}: {str(exc)[:160]}")
             print(f"   ↪️ {label} failed ({str(exc)[:120]}), trying the next model", flush=True)

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     Bot, KeyRound, Mic, Scissors, Type, Wand2, Youtube, Download, FolderOpen,
-    ArrowUp, ArrowDown, Trash2, Plus, Check, AlertTriangle, Loader2, ExternalLink,
+    ArrowUp, ArrowDown, Trash2, Plus, Check, AlertTriangle, Loader2, ExternalLink, HardDrive,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import FolderSettings from './FolderSettings';
@@ -19,6 +19,7 @@ const SECTIONS = [
     { id: 'hook', label: 'hook', icon: Wand2 },
     { id: 'youtube', label: 'YouTube', icon: Youtube },
     { id: 'downloads', label: 'downloads', icon: Download },
+    { id: 'storage', label: 'storage', icon: HardDrive },
     { id: 'folders', label: 'folders', icon: FolderOpen, desktopOnly: true },
 ];
 
@@ -133,7 +134,7 @@ function ModelsSection({ settings, onSaved }) {
     return (
         <div>
             <p className="text-sm text-muted mb-5">
-                Picks the moments and writes titles. Models are tried top to bottom: one whose budget for the period
+                Every AI step uses this list: picking moments, titles, layout, hooks from the picture, auto edit, silent videos. Models are tried top to bottom: one whose budget for the period
                 is spent is skipped, and if one fails (error, rate limit, bad answer) the next takes over.
                 Budgets need prices; known models fill them in.
             </p>
@@ -164,7 +165,7 @@ function ModelsSection({ settings, onSaved }) {
                                 <button type="button" title="down" disabled={i === chain.length - 1} onClick={() => move(i, 1)} className="p-1.5 text-muted hover:text-ink disabled:opacity-30"><ArrowDown size={14} /></button>
                                 <button type="button" title="remove" onClick={() => s.setDraft(chain.filter((_, k) => k !== i))} className="p-1.5 text-muted hover:text-danger"><Trash2 size={14} /></button>
                             </div>
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+                            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
                                 <Field label="budget $" hint="0 = none">
                                     <input type="number" min="0" step="0.5" value={e.budget_usd}
                                         onChange={(ev) => update(i, { budget_usd: Number(ev.target.value) })} className="input-field" />
@@ -180,6 +181,11 @@ function ModelsSection({ settings, onSaved }) {
                                 <Field label="$ / M out">
                                     <input type="number" min="0" step="0.01" value={e.price_out}
                                         onChange={(ev) => update(i, { price_out: Number(ev.target.value) })} className="input-field" />
+                                </Field>
+                                <Field label="images" hint="frames for layout, hooks, auto edit">
+                                    <Select value={e.vision === true ? 'yes' : e.vision === false ? 'no' : 'auto'}
+                                        onChange={(v) => update(i, { vision: v === 'yes' ? true : v === 'no' ? false : null })}
+                                        options={[{ value: 'auto', label: 'try' }, { value: 'yes', label: 'yes' }, { value: 'no', label: 'text only' }]} />
                                 </Field>
                                 <Toggle checked={e.enabled} onChange={(v) => update(i, { enabled: v })} label="enabled" />
                             </div>
@@ -368,6 +374,10 @@ function ClipsSection({ settings, onSaved }) {
                     <input type="number" min="1" max="30" value={d.count_max ?? ''} onChange={(e) => s.set({ count_max: num(e.target.value) })} className="input-field" />
                 </Field>
             </div>
+            <Toggle checked={!!d.punch_in} onChange={(v) => s.set({ punch_in: v })} label="subtle punch-in zooms on emphasis" />
+            <p className="text-xs text-muted -mt-3">A small push-in on the clip&apos;s beats while rendering; keeps static talking heads moving.</p>
+            <Toggle checked={!!d.speaker_cut} onChange={(v) => s.set({ speaker_cut: v })} label="cut to whoever is talking (interviews, podcasts)" />
+            <p className="text-xs text-muted -mt-3">With two or more people on camera, hard cuts follow the speaker instead of stacking them.</p>
             <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
         </div>
     );
@@ -530,6 +540,95 @@ function DownloadsSection({ settings, onSaved }) {
     );
 }
 
+const fmtBytes = (b) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(2)} GB` : `${Math.round((b || 0) / 1024 ** 2)} MB`);
+
+function StorageSection({ settings, onSaved }) {
+    const s = useSection(settings, 'storage', onSaved);
+    const d = s.draft || {};
+    const [usage, setUsage] = useState(null);
+    const [cleaning, setCleaning] = useState(null);
+    const [note, setNote] = useState(null);
+    const load = useCallback(() => {
+        apiFetch('/api/storage').then((r) => r.json()).then(setUsage).catch(() => setUsage(null));
+    }, []);
+    useEffect(() => { load(); }, [load]);
+    const clean = async (jobId) => {
+        setCleaning(jobId || 'all');
+        setNote(null);
+        try {
+            const r = await apiFetch('/api/storage/clean', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: jobId || null }),
+            });
+            const b = await r.json();
+            setNote(`Freed ${fmtBytes(b.bytes)} (${b.files} files)${b.skipped ? `, ${b.skipped} busy project(s) skipped` : ''}.`);
+        } catch (e) {
+            setNote(`Clean-up failed: ${e.message}`);
+        } finally {
+            setCleaning(null);
+            load();
+        }
+    };
+    return (
+        <div className="space-y-5">
+            <div className="rounded-input border border-rule p-4 space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-sm text-ink2 mr-auto">
+                        Projects use <span className="text-ink font-medium">{usage ? fmtBytes(usage.total_bytes) : '…'}</span>
+                        {usage?.reclaimable > 0 && <span className="text-muted"> · {fmtBytes(usage.reclaimable)} is old renders</span>}
+                    </span>
+                    <button type="button" disabled={!!cleaning || !usage?.reclaimable} onClick={() => clean(null)} className="btn-primary px-3 py-1.5 text-xs">
+                        {cleaning === 'all' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} remove old renders
+                    </button>
+                </div>
+                {note && <p className="text-xs text-muted">{note}</p>}
+                {usage?.projects?.length > 0 && (
+                    <div className="divide-y divide-rule border-t border-rule">
+                        {usage.projects.map((p) => (
+                            <div key={p.job_id} className="flex items-center gap-3 py-2 text-xs">
+                                <span className="truncate flex-1 text-ink2" title={p.title}>{p.title}</span>
+                                <span className="readout w-20 text-right">{fmtBytes(p.bytes)}</span>
+                                <span className="readout w-28 text-right text-muted">
+                                    {p.busy ? 'rendering' : p.reclaimable ? `${fmtBytes(p.reclaimable)} old` : 'clean'}
+                                </span>
+                                <button type="button" disabled={!!cleaning || !p.reclaimable} onClick={() => clean(p.job_id)}
+                                    className="text-muted hover:text-ink disabled:opacity-30" title="remove this project's old renders">
+                                    {cleaning === p.job_id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <Toggle checked={!!d.gc_enabled} onChange={(v) => s.set({ gc_enabled: v })} label="remove old renders automatically" />
+            <p className="text-xs text-muted -mt-3">
+                Every subtitle, hook or trim pass writes a new copy of the clip. Kept: each clip&apos;s current version and the
+                layers it is rebuilt from, the source video and metadata. Checked every few minutes; projects that are rendering are left alone.
+            </p>
+            <Field label="keep previous versions for (hours)" hint="before/after compares with them">
+                <input type="number" min="0" step="1" value={d.keep_previous_hours ?? 24}
+                    onChange={(e) => s.set({ keep_previous_hours: Number(e.target.value) })} className="input-field w-32" />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+                <Field label="delete untouched projects after (days)" hint="0 = never">
+                    <input type="number" min="0" step="1" value={d.retention_days ?? 0}
+                        onChange={(e) => s.set({ retention_days: Number(e.target.value) })} className="input-field" />
+                </Field>
+                <Field label="delete oldest projects above (GB)" hint="0 = no limit">
+                    <input type="number" min="0" step="1" value={d.max_output_gb ?? 0}
+                        onChange={(e) => s.set({ max_output_gb: Number(e.target.value) })} className="input-field" />
+                </Field>
+            </div>
+            {(d.retention_days > 0 || d.max_output_gb > 0) && (
+                <p className="text-xs text-warn">
+                    Deleting projects removes their source and clips for good. Projects with a clip scheduled on YouTube for later are never deleted.
+                </p>
+            )}
+            <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
+        </div>
+    );
+}
+
 // ---------------------------------------------------------------- page
 
 export default function SettingsPage() {
@@ -580,6 +679,7 @@ export default function SettingsPage() {
                             {section === 'hook' && <HookSection {...props} />}
                             {section === 'youtube' && <YouTubeSection {...props} />}
                             {section === 'downloads' && <DownloadsSection {...props} />}
+                            {section === 'storage' && <StorageSection {...props} />}
                             {section === 'folders' && <FolderSettings />}
                         </div>
                     </div>

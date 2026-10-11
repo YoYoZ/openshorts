@@ -97,8 +97,10 @@ def sample_times(ranges, clip_duration, n=None):
     return times
 
 
-def frames_at(video_path, times, width=None):
-    """JPEG bytes of the frame at each timestamp, at ``width`` px wide."""
+def frames_at(video_path, times, width=None, keep_missing=False):
+    """JPEG bytes of the frame at each timestamp, at ``width`` px wide.
+    ``keep_missing`` puts None for unreadable ones, so the list stays aligned
+    with ``times``."""
     import cv2
 
     width = width or WIDTH
@@ -109,6 +111,8 @@ def frames_at(video_path, times, width=None):
             cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
             ok, frame = cap.read()
             if not ok:
+                if keep_missing:
+                    out.append(None)
                 continue
             h, w = frame.shape[:2]
             scaled = cv2.resize(frame, (width, max(2, int(h * width / w))),
@@ -116,40 +120,31 @@ def frames_at(video_path, times, width=None):
             ok, buf = cv2.imencode(".jpg", scaled, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
                 out.append(buf.tobytes())
+            elif keep_missing:
+                out.append(None)
     finally:
         cap.release()
     return out
 
 
-def _ask_gemini(frames, prompt, api_key):
-    """One vision call; returns the parsed dict. Split out so tests can stub it."""
-    from google import genai
-    from google.genai import types as genai_types
+def _ask_gemini(frames, prompt, api_key=None):
+    """One vision call through the model chain; returns the parsed dict.
+    Split out (and keeps its old name) so tests can stub it."""
     import gemini_worker
-
-    client = genai.Client(api_key=api_key)
-    model_name = os.environ.get("GEMINI_MODEL") or "gemini-3.1-flash-lite"
-    parts = [genai_types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in frames]
-    response = client.models.generate_content(
-        model=model_name,
-        contents=parts + [prompt],
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=gemini_worker.GroundedHook,
-        ))
-    gemini_worker.raise_if_blocked(response)
-    return json.loads(response.text) or {}
+    import llm_backend
+    answer, _ = llm_backend.generate_json(prompt, gemini_worker.GroundedHook, images=frames)
+    return answer or {}
 
 
 def reground(clip_path, clip, transcript, start, end) -> Optional[dict]:
     """Rewrite ``clip['viral_hook_text']`` / ``video_title_for_youtube_short``
     in place from the clip's frames. Returns what changed (also stored under
     ``clip['hook_grounding']``), or None when skipped or failed."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("   🪝 Hook grounding skipped: needs a Gemini key (frames), "
-              "keeping the transcript hook.")
+    import llm_backend
+    if not llm_backend.available():
+        print("   🪝 Hook grounding skipped: no AI model configured, keeping the transcript hook.")
         return None
+    api_key = None
     try:
         import gemini_worker
 

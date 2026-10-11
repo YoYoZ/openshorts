@@ -390,11 +390,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         try {
             const apiKey = geminiApiKey || localStorage.getItem('gemini_key');
 
-            // Managed (paid) users get the Gemini key resolved server-side;
-            // only BYOK/self-host needs a local key.
-            if (!apiKey && !isManaged) {
-                throw new Error("Gemini API Key is missing. Please set it in Settings.");
-            }
+            // The server uses the Settings model chain (or its own Gemini key)
+            // and answers 400 when no model is configured at all.
             const geminiHeaders = apiKey ? { 'X-Gemini-Key': apiKey } : {};
 
             // Try Remotion effects endpoint first

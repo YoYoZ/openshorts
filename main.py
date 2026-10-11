@@ -2204,19 +2204,67 @@ def speech_is_sparse(transcript, duration):
     return words < MIN_SPEECH_WORDS or words / minutes < MIN_SPEECH_WORDS_PER_MIN
 
 
+def _visual_clips_from_frames(video_path, video_duration, language="en"):
+    """Silent-video clipping on any image-capable model in the chain: the
+    footage goes as timestamped frames (one every few seconds) instead of a
+    video upload, which only Gemini accepts."""
+    import hook_grounding
+    n = max(8, min(int(os.environ.get("VISION_MAX_FRAMES", "48")), int(video_duration // 2) or 8))
+    step = float(video_duration) / n
+    times = [round(i * step + step / 2, 2) for i in range(n)]
+    print(f"🎥  Silent video: showing {n} frames (one every {step:.1f} s) to the model chain…")
+    frames = hook_grounding.frames_at(video_path, times, width=384, keep_missing=True)
+    pairs = [(t, f) for t, f in zip(times, frames) if f]
+    if not pairs:
+        print("❌ Could not read frames from the video.")
+        return None
+
+    def _env_int(name, default):
+        try:
+            return max(1, int(os.environ.get(name, "")))
+        except ValueError:
+            return default
+    v_min_clips = _env_int("CLIP_TARGET_MIN", 3)
+    v_max_clips = max(v_min_clips, _env_int("CLIP_TARGET_MAX", 15))
+    v_min_secs, v_max_secs = clip_duration_bounds()
+    prompt = gemini_worker.VISUAL_PROMPT_TEMPLATE.format(
+        video_duration=video_duration, language=language,
+        min_clips=v_min_clips, max_clips=v_max_clips,
+        min_secs=v_min_secs, max_secs=v_max_secs)
+    timeline = ", ".join(f"image {i + 1} = {t:.1f}s" for i, (t, _) in enumerate(pairs))
+    prompt = ("You cannot watch the video; instead you get frames sampled from it, in order. "
+              f"Their timestamps: {timeline}. Use them to place start/end times.  " + prompt)
+    try:
+        parsed, cost = llm_backend.generate_json(prompt, gemini_worker.VisualResponse,
+                                                 images=[f for _, f in pairs])
+    except Exception as e:
+        print(f"❌ Vision pass failed: {e}")
+        return None
+    clean = []
+    for c in (parsed or {}).get("shorts") or []:
+        c["start"] = max(0.0, float(c.get("start", 0)))
+        c["end"] = min(float(video_duration), float(c.get("end", 0)))
+        if c["end"] - c["start"] >= 1.0:
+            clean.append(c)
+    if not clean:
+        print("⚠️ Vision pass returned no usable clips.")
+        return None
+    if cost:
+        print(f"💰 Vision cost ({cost.get('model')}): ${cost.get('total_cost', 0):.6f}")
+    return {"shorts": clean, **({"cost_analysis": cost} if cost else {})}
+
+
 def get_visual_clips(video_path, video_duration, language="en"):
     """Clip a SILENT video by vision: Gemini watches the footage and picks the
     most engaging visual moments (no transcript). Returns the same
     {"shorts", "cost_analysis"} shape as get_viral_clips, or None."""
+    if llm_backend.active():
+        return _visual_clips_from_frames(video_path, video_duration, language)
     print("🎥  Silent video — analyzing with Gemini vision (no transcript)...")
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        if llm_backend.active():
-            print("❌ This video has no usable speech, so it has to be clipped by "
-                  "watching it, and that needs Gemini (a text-only LLM server "
-                  "cannot see the footage). Add a GEMINI_API_KEY for silent videos.")
-        else:
-            print("❌ Error: GEMINI_API_KEY not found.")
+        print("❌ This video has no usable speech and no AI model is configured "
+              "(Settings → AI models).")
         return None
     client = genai.Client(api_key=api_key)
     model_name = os.environ.get("GEMINI_MODEL") or 'gemini-3.1-flash-lite'
