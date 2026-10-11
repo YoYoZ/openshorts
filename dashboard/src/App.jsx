@@ -376,7 +376,9 @@ function App() {
   const [focusCmd, setFocusCmd] = useState(null);       // { name, n } keyboard command
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scheduleSubset, setScheduleSubset] = useState(null);
-  useEffect(() => { setSelectedIdx(new Set()); setFocusIdx(null); setClipFilter('all'); }, [jobId]);
+  // Pre-publish checklist summaries per clip index ({ok, warn, fail, info}).
+  const [clipChecks, setClipChecks] = useState({});
+  useEffect(() => { setSelectedIdx(new Set()); setFocusIdx(null); setClipFilter('all'); setClipChecks({}); }, [jobId]);
   // Renders made in one card (workspace or grid) land in the job metadata;
   // re-reading it on every workspace switch keeps the other copy current.
   useEffect(() => {
@@ -388,8 +390,39 @@ function App() {
       ? [...rankedClips].sort((a, b) => a.index - b.index)
       : rankedClips;
     if (clipFilter === 'all') return list.filter(({ clip }) => !clip.rejected);
+    if (clipFilter === 'issues') {
+      return list.filter(({ clip, index }) => !clip.rejected && (clipChecks[index]?.fail || clipChecks[index]?.warn));
+    }
     return list.filter(({ clip }) => clipStatus(clip) === clipFilter);
-  }, [rankedClips, clipFilter, clipSort]);
+  }, [rankedClips, clipFilter, clipSort, clipChecks]);
+  // Re-run the checklist whenever a clip's file or text changes (renders,
+  // title edits); the backend caches the slow media part per file.
+  const checksKey = (results?.clips || []).map((c) => [c.video_url, c.video_title_for_youtube_short,
+    c.video_description_for_tiktok, c.auto_hook?.text, c.rejected, c.youtube?.video_id].join('|')).join(' / ');
+  useEffect(() => {
+    if (status !== 'complete' || !jobId || !checksKey) return undefined;
+    let stop = false;
+    let t;
+    const fetchChecks = async (retry) => {
+      try {
+        const res = await apiFetch(`/api/checks/${jobId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        if (stop) return;
+        const next = {};
+        Object.entries(body).forEach(([i, r]) => { next[i] = r.summary; });
+        setClipChecks(next);
+      } catch {
+        // Advisory only: one retry (the backend may still be starting).
+        if (retry && !stop) t = setTimeout(() => fetchChecks(false), 5000);
+      }
+    };
+    t = setTimeout(() => fetchChecks(true), 1200);
+    return () => { stop = true; clearTimeout(t); };
+  }, [checksKey, jobId, status]);
+  const issueCount = rankedClips.filter(({ clip, index }) => !clip.rejected
+    && (clipChecks[index]?.fail || clipChecks[index]?.warn)).length;
+  const onChecks = (index, summary) => setClipChecks((prev) => ({ ...prev, [index]: summary }));
   const clipCounts = useMemo(() => {
     const c = { all: 0, todo: 0, done: 0, scheduled: 0, published: 0, rejected: 0 };
     rankedClips.forEach(({ clip }) => {
@@ -441,7 +474,7 @@ function App() {
     if (focusIdx === null) return undefined;
     const keys = {
       ' ': 'play', k: 'play', j: 'back', l: 'fwd', o: 'ok', s: 'safe', h: 'before',
-      1: 'edit', 2: 'frame', 3: 'subs', 4: 'hook',
+      1: 'edit', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'check',
     };
     const onKey = (e) => {
       const t = e.target;
@@ -2249,10 +2282,17 @@ function App() {
                       (key === 'all' || clipCounts[key] > 0) && (
                         <button key={key} type="button" onClick={() => setClipFilter(key)}
                           className={`px-2.5 py-1 rounded-full text-xs transition-colors ${clipFilter === key ? 'bg-brass text-black' : 'bg-paper3 text-muted hover:text-ink2'}`}>
-                          {label} <span className="readout opacity-70">{clipCounts[key]}</span>
+                          {label} <span className={`readout ${clipFilter === key ? '!text-black/70' : 'opacity-70'}`}>{clipCounts[key]}</span>
                         </button>
                       )
                     ))}
+                    {issueCount > 0 && (
+                      <button type="button" onClick={() => setClipFilter('issues')}
+                        title="clips whose pre-publish checklist has warnings or blockers"
+                        className={`px-2.5 py-1 rounded-full text-xs transition-colors ${clipFilter === 'issues' ? 'bg-warn text-black' : 'bg-paper3 text-warn hover:brightness-125'}`}>
+                        needs fixes <span className="readout opacity-80">{issueCount}</span>
+                      </button>
+                    )}
                     <select value={clipSort} onChange={(e) => setClipSort(e.target.value)}
                       className="ml-auto bg-paper3 text-xs text-ink2 rounded-full px-2.5 py-1 border border-rule">
                       <option value="score">by score</option>
@@ -2312,6 +2352,8 @@ function App() {
                           onSelect={status === 'complete' ? toggleSelect : null}
                           onOpenFocus={status === 'complete' ? (idx) => setFocusIdx(idx) : null}
                           onClipPatch={patchClip}
+                          checks={clipChecks[i] || null}
+                          onChecks={onChecks}
                           onEditClip={(index) => setEditingClip(index)}
                           onReframeClip={(index) => setReframingClip(index)}
                           onUpgrade={isManaged ? openUpsell : null}
@@ -2402,6 +2444,7 @@ function App() {
         uploadUserId={uploadUserId}
         isManaged={isManaged}
         onScheduled={refreshResults}
+        checks={clipChecks}
       />
       <ScheduleWeekModal
         isOpen={!!scheduleSubset}
@@ -2409,6 +2452,7 @@ function App() {
         clips={scheduleSubset || []}
         jobId={jobId}
         onScheduled={refreshResults}
+        checks={clipChecks}
       />
 
       {/* Clip workspace: one clip, big preview, keyboard driven. Sits under the
@@ -2426,7 +2470,7 @@ function App() {
                 clip #{focusIdx + 1}{pos >= 0 ? ` · ${pos + 1} of ${visibleClips.length}` : ''} · {clipStatus(clip).replace('todo', 'to edit')}
               </span>
               <span className="hidden lg:block ml-auto text-[11px] text-muted readout">
-                space/K play · J/L ±2s · ←/→ clip · 1 trim · 2 frame · 3 subtitles · 4 hook · O done · S safe zone · H before/after · Esc close
+                space/K play · J/L ±2s · ←/→ clip · 1 trim · 2 frame · 3 subtitles · 4 hook · 5 check · O done · S safe zone · H before/after · Esc close
               </span>
               <div className="flex gap-1.5 ml-auto lg:ml-3">
                 <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs">
@@ -2447,6 +2491,8 @@ function App() {
                   focus
                   command={focusCmd}
                   onClipPatch={patchClip}
+                  checks={clipChecks[focusIdx] || null}
+                  onChecks={onChecks}
                   onEditClip={(index) => setEditingClip(index)}
                   onReframeClip={(index) => setReframingClip(index)}
                   durable={durableClips[focusIdx]}

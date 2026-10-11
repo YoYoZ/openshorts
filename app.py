@@ -3943,6 +3943,44 @@ async def update_clip_meta(job_id: str, clip_index: int, req: ClipMetaUpdate):
     return {"updated": changes}
 
 
+def _clip_checks(job_id, clips, index):
+    import urllib.parse
+    import shorts_checklist
+    clip = clips[index]
+    name = os.path.basename(urllib.parse.unquote(str(clip.get("video_url") or "").split("?")[0]))
+    path = os.path.join(OUTPUT_DIR, job_id, name)
+    if not name or not os.path.isfile(path):
+        return {"error": "clip file is missing", "items": [], "summary": {"fail": 1}}
+    facts = shorts_checklist.media_facts(path)
+    siblings = [c for i, c in enumerate(clips) if i != index and not c.get("rejected")]
+    return shorts_checklist.run(clip, facts, siblings)
+
+
+@app.get("/api/clip/{job_id}/{clip_index}/checks")
+async def clip_checks(job_id: str, clip_index: int):
+    """Pre-publish checklist for one clip (shorts_checklist.py)."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    _, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return await asyncio.to_thread(_clip_checks, job_id, clips, clip_index)
+
+
+@app.get("/api/checks/{job_id}")
+async def project_checks(job_id: str):
+    """Checklist summary for every clip: {clip_index: {summary, items}}."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    _, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+
+    def all_checks():
+        return {str(i): _clip_checks(job_id, clips, i) for i in range(len(clips))}
+    return await asyncio.to_thread(all_checks)
+
+
 class RewriteRequest(BaseModel):
     instruction: Optional[str] = None
 
@@ -6118,6 +6156,7 @@ async def add_hook(req: HookRequest, request: Request):
     filename = clean_name
     input_path = os.path.join(output_dir, clean_name)
 
+    hook_result = None   # auto placement reports where the box landed
     if req.remove:
         # Nothing to burn: the hook-less file is the target; captions (if the
         # clip had them) go back on below.
@@ -6148,7 +6187,7 @@ async def add_hook(req: HookRequest, request: Request):
                     has_captions=had_captions)
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, run_hook)
+            hook_result = await loop.run_in_executor(None, run_hook)
 
         except Exception as e:
             print(f"❌ Hook Error: {e}")
@@ -6177,6 +6216,8 @@ async def add_hook(req: HookRequest, request: Request):
             "text": req.text, "style": req.style, "font": req.font, "position": req.position,
             "duration_seconds": req.duration_seconds, "scale": font_scale,
         }
+        if isinstance(hook_result, dict):   # frame fractions, for the checklist
+            clip_data['auto_hook'].update({k: hook_result[k] for k in ("y", "height") if k in hook_result})
 
     # Update Persistence (Same logic as subtitles)
     # Update InMemory Jobs

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Loader2, Calendar, CheckCircle, AlertCircle, Video, Instagram, Youtube, ChevronLeft, ChevronRight, Circle, ExternalLink } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import Modal from './ui/Modal';
+import { ChecksBadge } from './ChecklistModal';
 import SegmentedControl from './ui/SegmentedControl';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -84,7 +85,7 @@ function detectTimezone() {
     }
 }
 
-export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onScheduled = null }) {
+export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onScheduled = null, checks = {} }) {
     const [time, setTime] = useState('18:00');
     const [time2, setTime2] = useState('12:00');     // second slot for 2/day
     const [cadence, setCadence] = useState('daily');
@@ -333,9 +334,24 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
                 </div>
             </div>
 
+            {(() => {
+                // Checklist results from the clip cards: say so before posting
+                // anything that has blockers or warnings.
+                const blocked = schedule.filter(({ clipIndex }) => checks?.[clipIndex]?.fail).length;
+                const warned = schedule.filter(({ clipIndex }) => !checks?.[clipIndex]?.fail && checks?.[clipIndex]?.warn).length;
+                if (!blocked && !warned) return null;
+                return (
+                    <p className={`mb-3 px-3 py-2 rounded-input text-xs border ${blocked ? 'border-danger/50 text-danger' : 'border-warn/40 text-warn'}`}>
+                        {blocked ? `${blocked} clip${blocked > 1 ? 's' : ''} fail the checklist (✕). ` : ''}
+                        {warned ? `${warned} with things to improve (!). ` : ''}
+                        Open a clip's “check” step to see what.
+                    </p>
+                );
+            })()}
+
             {/* Calendar list */}
             <div className="mb-5 border-y border-rule divide-y divide-rule">
-                {schedule.map(({ clip, index, date, time: slotTime }) => (
+                {schedule.map(({ clip, index, clipIndex, date, time: slotTime }) => (
                     <div key={index} className="flex items-center gap-3 py-2.5">
                         <div className="w-24 shrink-0">
                             <span className="readout">{getDayLabel(date)} · {formatDate(date)}</span>
@@ -343,6 +359,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
 
                         <div className="flex-1 min-w-0">
                             <div className="text-xs text-ink truncate">
+                                <ChecksBadge summary={checks?.[clipIndex]} className="mr-1.5" />
                                 {clip.video_title_for_youtube_short || 'Viral Short'}
                             </div>
                             <div className="readout mt-0.5 truncate">

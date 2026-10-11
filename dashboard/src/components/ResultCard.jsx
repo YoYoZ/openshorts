@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, Share2, Instagram, Youtube, Video, AlertCircle, Loader2, Copy, Check, Wand2, Type, Calendar, Languages, FileText, Link2, Scissors, Crosshair, TrendingUp, Maximize2, Shield, History, Pencil } from 'lucide-react';
+import { Download, Share2, Instagram, Youtube, Video, AlertCircle, Loader2, Copy, Check, Wand2, Type, Calendar, Languages, FileText, Link2, Scissors, Crosshair, TrendingUp, Maximize2, Shield, History, Pencil, ClipboardCheck } from 'lucide-react';
 import { getApiUrl } from '../config';
 import { apiFetch } from '../lib/api';
 import RenderOverlay from './RenderOverlay';
 import SubtitleModal from './SubtitleModal';
 import HookModal from './HookModal';
+import ChecklistModal, { ChecksBadge } from './ChecklistModal';
 import TranslateModal from './TranslateModal';
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
@@ -43,7 +44,7 @@ const StepNo = ({ n, done }) => (
     <span className={`absolute top-1 left-1.5 readout text-[9px] ${done ? 'text-ok' : 'text-brass'}`}>{done ? `${n}✓` : n}</span>
 );
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -303,6 +304,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [isHooking, setIsHooking] = useState(false);
     const [isTranslating, setIsTranslating] = useState(false);
     const [showHookModal, setShowHookModal] = useState(false);
+    const [showChecks, setShowChecks] = useState(false);
     const [showTranslateModal, setShowTranslateModal] = useState(false);
     const [editError, setEditError] = useState(null);
 
@@ -874,6 +876,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 if (command.name === 'frame' && onReframeClip) onReframeClip(index);
                 if (command.name === 'subs') setShowSubtitleModal(true);
                 if (command.name === 'hook') setShowHookModal(true);
+                if (command.name === 'check') setShowChecks(true);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [command]);
@@ -1142,6 +1145,18 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     </button>
 
                     <button
+                        onClick={() => { videoRef.current?.pause(); setShowChecks(true); }}
+                        disabled={busy}
+                        className={QUIET_BTN}
+                        title="pre-publish checklist: length, format, sound, safe zones, title"
+                    >
+                        <ClipboardCheck size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />
+                        <StepNo n={5} done={!!checks && !checks.fail && !checks.warn} />
+                        <ChecksBadge summary={checks} className="absolute top-1 right-1.5 text-[9px]" />
+                        check
+                    </button>
+
+                    <button
                         onClick={() => { videoRef.current?.pause(); handleAutoEdit(); }}
                         disabled={busy}
                         className={QUIET_BTN}
@@ -1375,6 +1390,14 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 existingHook={activeLayers.hook}
             />
 
+            <ChecklistModal
+                isOpen={showChecks}
+                onClose={() => setShowChecks(false)}
+                jobId={jobId}
+                clipIndex={index}
+                clipVersion={clip.video_url}
+                onResult={(i, body) => onChecks?.(i, body.summary)}
+            />
             <HookModal
                 isOpen={showHookModal}
                 onClose={() => setShowHookModal(false)}

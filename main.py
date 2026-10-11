@@ -1357,6 +1357,8 @@ def auto_hook_clip(clip_path, clip, captions=None):
         def note(result):
             if isinstance(result, dict) and result.get("y") is not None:
                 config["y"] = result["y"]
+                if result.get("height") is not None:
+                    config["height"] = result["height"]
 
         if captions:
             vf, generation_id = captions
