@@ -1,8 +1,9 @@
 name: Desktop app
 
 # Builds the AutoShortsCut desktop app (desktop/, Electron) for Windows,
-# Linux and macOS. Artifacts are attached to the run; pushing a tag
-# desktop-vX.Y.Z also attaches them to a GitHub release.
+# Linux and macOS, and puts all three into a DRAFT GitHub release (publish it
+# by hand on GitHub). A tag desktop-vX.Y.Z makes the draft for that version;
+# any other build makes "vX.Y.Z build N" from desktop/package.json.
 #
 # The packages carry the backend source and the built dashboard. The first
 # launch creates a Python environment from a system Python 3.10-3.12 and
@@ -68,8 +69,41 @@ jobs:
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
-        uses: softprops/action-gh-release@v2
+  # One job for the release: matrix jobs uploading on their own race each
+  # other and can leave several drafts for one build.
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          files: ${{ matrix.artifact }}
+          path: artifacts
+          merge-multiple: true
+
+      - name: Name the draft
+        id: name
+        run: |
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "title=AutoShortsCut ${TAG#desktop-}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=desktop-v$VERSION-build.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "title=AutoShortsCut v$VERSION build $GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ steps.name.outputs.tag }}
+          name: ${{ steps.name.outputs.title }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          body: |
+            Windows installer, Linux AppImage and macOS dmg (unsigned).
+            Needs Python 3.10-3.12 and ffmpeg on the machine; the first launch
+            installs the processing engine into the app's data folder.
+          files: artifacts/*
