@@ -10,7 +10,6 @@
 // Versions are pinned; bump them here.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
@@ -21,7 +20,11 @@ const FFMPEG_STATIC_MAC = 'b6.1.1';                      // eugeneware/ffmpeg-st
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const vendor = path.join(here, 'vendor');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'asc-vendor-'));
+// Next to vendor/, not in the OS temp dir: on Windows runners that is another
+// drive, and the final rename into vendor/ cannot cross drives.
+fs.rmSync(path.join(here, '.vendor-tmp'), { recursive: true, force: true });
+fs.mkdirSync(path.join(here, '.vendor-tmp'), { recursive: true });
+const tmp = fs.mkdtempSync(path.join(here, '.vendor-tmp', 'v-'));
 const platform = process.platform;
 
 const PY_TRIPLE = {
@@ -98,5 +101,5 @@ async function ffmpeg() {
 fs.mkdirSync(vendor, { recursive: true });
 await python();
 await ffmpeg();
-fs.rmSync(tmp, { recursive: true, force: true });
+fs.rmSync(path.join(here, '.vendor-tmp'), { recursive: true, force: true });
 console.log(`vendor ready: ${fs.readdirSync(vendor).join(', ')}`);
