@@ -72,7 +72,7 @@ class VideoEditor:
         import llm_backend
         # The Settings model chain when there is one; Gemini's SDK (video
         # upload) only when it is the sole model available.
-        self.use_chain = llm_backend.active() or not api_key
+        self.use_chain = llm_backend.available("simple") and (bool(llm_backend.chain("simple")) or llm_backend.active() or not api_key)
         self.client = None if self.use_chain else genai.Client(api_key=api_key)
         self.model_name = (
             os.environ.get("GEMINI_MODEL_EDITOR")
@@ -186,7 +186,7 @@ class VideoEditor:
             import llm_backend
             print("🤖 Asking the model chain for an edit decision list...")
             plan, _ = llm_backend.generate_json(_timeline(video_file_obj) + prompt, EditPlan,
-                                                images=[f for _, f in video_file_obj["frames"]])
+                                                images=[f for _, f in video_file_obj["frames"]], tier="simple")
             raw_edits = (plan or {}).get("edits") or []
             return self._finish_edits(raw_edits, duration, fps, width, height, has_captions)
 
@@ -303,7 +303,7 @@ class VideoEditor:
             import llm_backend
             print("🤖 Asking the model chain for Remotion effects config...")
             cfg, _ = llm_backend.generate_json(_timeline(video_file_obj) + prompt, EffectsConfig,
-                                               images=[f for _, f in video_file_obj["frames"]])
+                                               images=[f for _, f in video_file_obj["frames"]], tier="simple")
             return cfg
 
         print("🤖 Asking Gemini for Remotion effects config...")
@@ -461,7 +461,7 @@ class VideoEditor:
                     f"This FFmpeg -vf filter fails. FILTER: {filter_string} ERROR: {error_text} "
                     f"Fix it, same intent; output size {width}x{height} (zoompan s={width}x{height}), "
                     "no bare comparison operators, expression values in single quotes.",
-                    RepairedFilter)
+                    RepairedFilter, tier="simple")
                 return (fixed or {}).get("filter_string") or None
             except Exception as e:
                 print(f"⚠️ Filter self-repair failed: {e}")

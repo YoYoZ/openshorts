@@ -43,14 +43,14 @@ _PRICES_PER_MTOK = {
 }
 
 
-def chain() -> List[dict]:
-    raw = os.environ.get("LLM_CHAIN_JSON")
-    if raw is None:
+def _entries(var):
+    raw = os.environ.get(var)
+    if raw is None and "LLM_CHAIN_JSON" not in os.environ:
         # The API process is not started with the chain in its environment
         # (job processes are): read it from the Settings store directly.
         try:
             import settings_store
-            raw = settings_store.child_env({}).get("LLM_CHAIN_JSON")
+            raw = settings_store.child_env({}).get(var)
         except Exception:
             raw = None
     try:
@@ -60,9 +60,70 @@ def chain() -> List[dict]:
         return []
 
 
-def available() -> bool:
-    """Any model at all: the chain, one endpoint, or a Gemini key."""
-    return active() or bool(os.environ.get("GEMINI_API_KEY"))
+def chain(tier: str = "hard") -> List[dict]:
+    """The models to try, in order. ``hard`` (moments, titles, hooks):
+    Settings → hard tasks. ``simple`` (yes/no image checks, filter fixes):
+    Settings → simple tasks, then the hard list as the last resort."""
+    hard = _entries("LLM_CHAIN_JSON")
+    if tier != "simple":
+        return hard
+    simple = _entries("LLM_CHAIN_SIMPLE_JSON")
+    ids = {e.get("id") for e in simple}
+    return simple + [e for e in hard if e.get("id") not in ids]
+
+
+# Models that told us how many images they accept ("supports up to 3 images").
+_IMAGE_LIMITS = {}
+
+
+def _grid_layout(n, limit):
+    """(frames per image, columns) to fit ``n`` frames into ``limit`` images."""
+    import math
+    per = max(1, math.ceil(n / max(1, limit)))
+    cols = min(4, per) if per > 2 else per
+    return per, cols
+
+
+def _grid_images(images, limit):
+    """Pack frames into at most ``limit`` grid images, in reading order.
+    Cells are 512 px wide: free tiers weigh images heavily, not pixels."""
+    import cv2
+    import numpy as np
+    per, cols = _grid_layout(len(images), limit)
+    rows = -(-per // cols)
+    decoded = [cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR) for b in images]
+    decoded = [d for d in decoded if d is not None]
+    if not decoded:
+        return images[:limit]
+    h0, w0 = decoded[0].shape[:2]
+    w, h = 512, max(2, int(h0 * 512 / w0))
+    out = []
+    for i in range(0, len(decoded), per):
+        cells = [cv2.resize(d, (w, h)) for d in decoded[i:i + per]]
+        cells += [np.zeros_like(cells[0])] * (rows * cols - len(cells))
+        grid = np.vstack([np.hstack(cells[r * cols:(r + 1) * cols]) for r in range(rows)])
+        ok, buf = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        if ok:
+            out.append(buf.tobytes())
+    return out[:limit]
+
+
+def _fit_images(model, prompt, images):
+    """Images and prompt adjusted to the model's known image limit."""
+    limit = _IMAGE_LIMITS.get(model)
+    if not images or not limit or len(images) <= limit:
+        return prompt, images
+    per, cols = _grid_layout(len(images), limit)
+    note = (f"Each image is a grid of {per} frames ({cols} per row) from the video "
+            f"({len(images)} frames in total, in time order: left to right, then top to bottom). "
+            "Judge each frame on its own; 'image N' or 'frame N' below means the N-th frame, and "
+            "positions or fractions refer to that single frame, not to the whole grid. ")
+    return note + prompt, _grid_images(images, limit)
+
+
+def available(tier: str = "hard") -> bool:
+    """Any model at all: a chain, one endpoint, or a Gemini key."""
+    return bool(chain(tier)) or active() or bool(os.environ.get("GEMINI_API_KEY"))
 
 
 def _image_parts(images):
@@ -147,8 +208,9 @@ def _call(base: str, key: str, model: str, prompt: str, schema: Type[BaseModel],
     content = ([{"type": "text", "text": prompt}, *_image_parts(images)] if images else prompt)
     # The schema also goes in the prompt: several OpenAI-compatible endpoints
     # (Anthropic's among them) accept response_format but do not enforce it.
-    system = ("You answer with a single JSON object and nothing else. It must match this JSON "
-              "schema exactly (same field names): " + json.dumps(schema.model_json_schema()))
+    system = ("You answer with a single JSON object and nothing else: the data itself, not "
+              "the schema. It must follow this JSON schema exactly (same field names): "
+              + json.dumps(schema.model_json_schema()))
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": content},
@@ -166,6 +228,9 @@ def _call(base: str, key: str, model: str, prompt: str, schema: Type[BaseModel],
             if fmt is not None and _is_format_rejection(resp):
                 last_rejection = resp.text[:200]
                 continue
+            if resp.status_code == 429 and resp.headers.get("retry-after"):
+                raise RuntimeError(f"LLM server 429 from {url}: try again in "
+                                   f"{resp.headers['retry-after']}s ({resp.text[:200]})")
             if resp.status_code >= 400:
                 raise RuntimeError(f"LLM server {resp.status_code} from {url}: {resp.text[:300]}")
             data = resp.json()
@@ -216,15 +281,46 @@ def _gemini_sdk(prompt, schema, images):
     return schema.model_validate(parsed).model_dump(), gemini_worker._calculate_cost_analysis(response, model)
 
 
+def _call_adapting(e, label, prompt, schema, images):
+    """``_call`` for one chain entry, adapting to what the server says:
+    "supports up to N images" -> pack frames into N grids; "request too large"
+    (Groq's free tier weighs each image heavily) -> one grid; a 429 with a
+    short "try again in Xs" -> wait, since the next model may cost money."""
+    import re
+    import time as _time
+    for _attempt in range(4):
+        p, imgs = _fit_images(e["model"], prompt, images)
+        try:
+            return _call(e["base_url"], e.get("key", ""), e["model"], p, schema, imgs)
+        except RuntimeError as exc:
+            text = str(exc)
+            limit = re.search(r"up to (\d+) images?", text)
+            too_large = " 413 " in text or "too large" in text.lower()
+            wait = re.search(r" 429 .*?try again in (?:(\d+)m)?([\d.]+)s", text)
+            if images and limit and _IMAGE_LIMITS.get(e["model"], 99) > int(limit.group(1)):
+                _IMAGE_LIMITS[e["model"]] = max(1, int(limit.group(1)))
+            elif images and too_large and _IMAGE_LIMITS.get(e["model"]) != 1:
+                _IMAGE_LIMITS[e["model"]] = 1
+            elif wait:
+                seconds = int(wait.group(1) or 0) * 60 + float(wait.group(2))
+                if seconds > float(os.environ.get("LLM_RATE_WAIT_MAX", "75")):
+                    raise
+                print(f"   ⏳ {label} rate-limited, retrying in {seconds:.0f}s", flush=True)
+                _time.sleep(seconds + 0.5)
+            else:
+                raise
+    raise RuntimeError(f"{label}: gave up after adapting the request")
+
+
 def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = None,
-                  images: Optional[List[bytes]] = None) -> Tuple[dict, Optional[dict]]:
+                  images: Optional[List[bytes]] = None, tier: str = "hard") -> Tuple[dict, Optional[dict]]:
     """One chat completion that must come back as JSON matching ``schema``.
 
     Returns ``(parsed_dict, cost_analysis)`` in the shape
     ``main._run_gemini_stage`` returns. Raises when every configured model
     failed (or, in a chain, was over budget); the retry policy is the caller's.
     """
-    entries = chain()
+    entries = chain(tier)
     if not entries and not base_url() and os.environ.get("GEMINI_API_KEY"):
         return _gemini_sdk(prompt, schema, images)
     if not entries:
@@ -252,7 +348,7 @@ def generate_json(prompt: str, schema: Type[BaseModel], model: Optional[str] = N
             problems.append(f"{label} cannot see images")
             continue
         try:
-            validated, usage = _call(e["base_url"], e.get("key", ""), e["model"], prompt, schema, images)
+            validated, usage = _call_adapting(e, label, prompt, schema, images)
         except Exception as exc:
             problems.append(f"{label}: {str(exc)[:160]}")
             print(f"   ↪️ {label} failed ({str(exc)[:120]}), trying the next model", flush=True)

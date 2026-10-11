@@ -45,6 +45,28 @@ LOWEST_BAND = 0.97
 # behind the text, a frame the model read a little low.
 MARGIN = 0.02
 
+from pydantic import BaseModel as _BaseModel
+
+
+class FrameSubtitle(_BaseModel):
+    frame: int
+    subtitle_top: float | None
+
+
+class SubtitleAnswer(_BaseModel):
+    frames: list[FrameSubtitle]
+
+
+# Answers the layout picker already got in its (combined) call, by source path:
+# both questions look at the same frames, so one model call serves both.
+_answers = {}
+
+
+def remember(video_path, frames):
+    if isinstance(frames, list):
+        _answers[os.path.abspath(video_path)] = frames
+
+
 PROMPT = """
 Each image is a frame sampled from the same landscape video, in order.
 
@@ -102,25 +124,20 @@ def detect(video_path, frames=None):
     if not ENABLED:
         return None
     import llm_backend
-    if not llm_backend.available():
+    if not llm_backend.available("simple"):
         return None
     try:
-        from pydantic import BaseModel
-
         import layout_picker
-
-        class FrameSubtitle(BaseModel):
-            frame: int
-            subtitle_top: float | None
-
-        class SubtitleAnswer(BaseModel):
-            frames: list[FrameSubtitle]
 
         frames = frames if frames is not None else layout_picker.sample_frames(video_path)
         if not frames:
             return None
-        answer, _ = llm_backend.generate_json(PROMPT, SubtitleAnswer, images=frames)
-        answer = answer or {}
+        cached = _answers.pop(os.path.abspath(video_path), None)
+        if cached is not None:
+            answer = {"frames": cached}
+        else:
+            answer, _ = llm_backend.generate_json(PROMPT, SubtitleAnswer, images=frames, tier="simple")
+            answer = answer or {}
     except Exception as e:
         print(f"   ⚠️ Burned-in subtitle check failed ({e}) — captions as usual.")
         return None

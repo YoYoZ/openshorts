@@ -219,7 +219,7 @@ def pick(video_path, video_duration):
     if not ENABLED:
         return "none"
     import llm_backend
-    if not llm_backend.available():
+    if not llm_backend.available("simple"):
         return "none"
 
     print("🎛️  Choosing a layout for this video…")
@@ -232,8 +232,21 @@ def pick(video_path, video_duration):
         if not frames:
             print("   ⚠️ No readable frames — keeping the default layout.")
             return "none"
-        answer, _ = llm_backend.generate_json(gemini_worker.LAYOUT_CHOICE_PROMPT,
-                                              gemini_worker.LayoutChoice, images=frames)
+        import burned_subtitles
+        # The burned-in subtitle check looks at these same frames: ask both
+        # questions in one call (half the calls; one image call a minute is
+        # all Groq's free tier allows).
+        both = burned_subtitles.ENABLED and os.environ.get("AUTO_CAPTIONS", "1").strip() != "0"
+        if both:
+            class LayoutAndSubtitles(gemini_worker.LayoutChoice):
+                frames: list[burned_subtitles.FrameSubtitle]
+            prompt = (gemini_worker.LAYOUT_CHOICE_PROMPT + "\n\nSECOND QUESTION, same images, answered in "
+                      "the same JSON object under \"frames\":\n" + burned_subtitles.PROMPT)
+            answer, _ = llm_backend.generate_json(prompt, LayoutAndSubtitles, images=frames, tier="simple")
+            burned_subtitles.remember(video_path, (answer or {}).get("frames"))
+        else:
+            answer, _ = llm_backend.generate_json(gemini_worker.LAYOUT_CHOICE_PROMPT,
+                                                  gemini_worker.LayoutChoice, images=frames, tier="simple")
         answer = answer or {}
     except Exception as e:
         print(f"   ⚠️ Layout choice failed ({e}) — keeping the default layout.")

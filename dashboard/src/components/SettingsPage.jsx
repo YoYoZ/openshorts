@@ -94,8 +94,8 @@ function useSection(settings, key, onSaved) {
 
 // ---------------------------------------------------------------- sections
 
-function ModelsSection({ settings, onSaved }) {
-    const s = useSection(settings, 'llm_chain', onSaved);
+function ModelsSection({ settings, onSaved, sectionKey = 'llm_chain', title, intro, empty }) {
+    const s = useSection(settings, sectionKey, onSaved);
     const chain = useMemo(() => s.draft || [], [s.draft]);
     const [models, setModels] = useState({});   // provider -> [ids]
     const providers = settings.providers;
@@ -133,12 +133,9 @@ function ModelsSection({ settings, onSaved }) {
 
     return (
         <div>
-            <p className="text-sm text-muted mb-5">
-                Every AI step uses this list: picking moments, titles, layout, hooks from the picture, auto edit, silent videos. Models are tried top to bottom: one whose budget for the period
-                is spent is skipped, and if one fails (error, rate limit, bad answer) the next takes over.
-                Budgets need prices; known models fill them in.
-            </p>
-            {chain.length === 0 && <p className="text-sm text-warn mb-4">No models yet: jobs fall back to the .env setup.</p>}
+            {title && <h3 className="font-display lowercase text-lg text-ink mb-1">{title}</h3>}
+            <p className="text-sm text-muted mb-5">{intro}</p>
+            {chain.length === 0 && <p className="text-sm text-warn mb-4">{empty}</p>}
             <div className="space-y-3">
                 {chain.map((e, i) => {
                     const pct = e.budget_usd > 0 ? Math.min(100, ((e.spent_usd || 0) / e.budget_usd) * 100) : 0;
@@ -671,7 +668,22 @@ export default function SettingsPage() {
                             ))}
                         </nav>
                         <div className="flex-1 min-w-0 card p-5 sm:p-6">
-                            {section === 'models' && <ModelsSection {...props} />}
+                            {section === 'models' && (
+                                <div className="space-y-12">
+                                    <ModelsSection {...props} sectionKey="llm_chain" title="hard tasks"
+                                        intro={<>Picking moments, titles, descriptions, hook text, AI rewrites, hooks read from the picture and
+                                            clipping silent videos: what viewers read. Models are tried top to bottom; one whose budget for the
+                                            period is spent is skipped, and if one fails (error, rate limit, bad answer) the next takes over.
+                                            Budgets need prices; known models fill them in.</>}
+                                        empty="No models yet: jobs fall back to the .env setup." />
+                                    <ModelsSection {...props} sectionKey="llm_chain_simple" title="simple tasks"
+                                        intro={<>Yes/no checks on frames (which layout, burned-in subtitles, screen recordings) and auto-edit planning.
+                                            A free vision model is enough, e.g. Groq <span className="font-mono">qwen/qwen3.8-27b</span>; models that
+                                            take only a few images get the frames packed into grids. When every model here fails or is over budget,
+                                            the hard-task list takes over.</>}
+                                        empty="Empty: simple tasks use the hard-task list." />
+                                </div>
+                            )}
                             {section === 'keys' && <KeysSection {...props} />}
                             {section === 'transcription' && <TranscriptionSection {...props} />}
                             {section === 'clips' && <ClipsSection {...props} />}

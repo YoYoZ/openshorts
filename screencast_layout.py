@@ -326,7 +326,7 @@ def detect_content_ranges(video_path, scenes, fps):
     if not scenes:
         return None
     import llm_backend
-    if not llm_backend.available():
+    if not llm_backend.available("simple"):
         print("   ⚠️ Screen check needs an AI model (Settings → AI models).")
         return None
 
@@ -344,7 +344,7 @@ def detect_content_ranges(video_path, scenes, fps):
         prompt = (f"The {len(keep)} images are shots 0 to {len(keep) - 1}, in that order "
                   f"(the first image is Shot 0). " + gemini_worker.SHOT_CONTENT_PROMPT)
         answer, _ = llm_backend.generate_json(prompt, gemini_worker.ShotContentResponse,
-                                              images=[jpg for _, jpg in keep])
+                                              images=[jpg for _, jpg in keep], tier="simple")
         raw = (answer or {}).get("shots") or []
     except Exception as e:
         print(f"   ⚠️ Screen check failed ({e}).")

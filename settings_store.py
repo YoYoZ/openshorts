@@ -49,7 +49,8 @@ DEFAULTS = {
     "version": 1,
     "providers": {name: {"key": "", **({"base_url": p["base_url"]} if name == "custom" else {})}
                   for name, p in PROVIDERS.items()},
-    "llm_chain": [],
+    "llm_chain": [],          # hard tasks: moments, titles, hooks, rewrites
+    "llm_chain_simple": [],   # simple tasks: yes/no image checks, filter fixes (empty = use hard)
     "transcription": {
         "mode": "auto",                  # auto (groq, then local) | groq | whisper
         "groq_model": "whisper-large-v3",
@@ -168,7 +169,7 @@ def save_section(section, value):
                     cur["key"] = str(incoming["key"]).strip()
             if name == "custom" and incoming.get("base_url"):
                 cur["base_url"] = str(incoming["base_url"]).strip().rstrip("/")
-    elif section == "llm_chain":
+    elif section in ("llm_chain", "llm_chain_simple"):
         chain = []
         for e in value or []:
             if e.get("provider") not in PROVIDERS or not str(e.get("model") or "").strip():
@@ -184,7 +185,7 @@ def save_section(section, value):
                 # Can it read images? None = try it (a failure hands over).
                 "vision": e.get("vision") if e.get("vision") in (True, False) else None,
             })
-        data["llm_chain"] = chain
+        data[section] = chain
     else:
         data[section] = _merge(DEFAULTS[section], value or {}) if isinstance(DEFAULTS[section], dict) else value
     with _lock:
@@ -208,7 +209,7 @@ def public():
         p["key_url"] = PROVIDERS[name]["key_url"]
         p.setdefault("base_url", PROVIDERS[name]["base_url"])
     ledger = read_spend()
-    for e in out["llm_chain"]:
+    for e in out["llm_chain"] + out["llm_chain_simple"]:
         e["spent_usd"] = round(ledger.get(period_key(e["period"]), {}).get(e["id"], 0.0), 4)
     out["known_prices"] = KNOWN_PRICES
     return out
@@ -257,16 +258,24 @@ def add_spend(entry_id, period, usd):
 def child_env(env):
     """Apply the settings to a job's environment (in place) and return it."""
     data = load()
-    chain = []
-    for e in data["llm_chain"]:
-        if not e.get("enabled"):
-            continue
-        base, key = provider_endpoint(e["provider"], data)
-        if not key and e["provider"] != "custom":
-            continue
-        chain.append({**e, "base_url": base, "key": key})
+
+    def resolved(entries):
+        out = []
+        for e in entries:
+            if not e.get("enabled"):
+                continue
+            base, key = provider_endpoint(e["provider"], data)
+            if not key and e["provider"] != "custom":
+                continue
+            out.append({**e, "base_url": base, "key": key})
+        return out
+    chain = resolved(data["llm_chain"])
+    simple = resolved(data.get("llm_chain_simple") or [])
     if chain:
         env["LLM_CHAIN_JSON"] = json.dumps(chain)
+        env["LLM_SPEND_PATH"] = SPEND_PATH
+    if simple:
+        env["LLM_CHAIN_SIMPLE_JSON"] = json.dumps(simple)
         env["LLM_SPEND_PATH"] = SPEND_PATH
     t = data["transcription"]
     env["TRANSCRIBE_BACKEND"] = t["mode"]
