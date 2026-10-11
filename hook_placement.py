@@ -35,7 +35,7 @@ LEGACY_TOP = 0.20       # where position="top" has always drawn the hook
 # Anton 44, MarginV 43 of PlayResY 288): bottom captions span ~0.75-0.83,
 # seam captions ~0.47-0.54. Padded so a two-line block or the pop scale-up
 # still clears the hook.
-BOTTOM_CAPTIONS = (0.70, 0.88)
+BOTTOM_CAPTIONS = (0.52, 0.77)   # MarginV 75 (Shorts-safe): two-line block measured 0.53-0.74
 SEAM_CAPTIONS = (0.42, 0.58)
 
 # Score units: share of a face covered. 0.05 means moving the hook the whole

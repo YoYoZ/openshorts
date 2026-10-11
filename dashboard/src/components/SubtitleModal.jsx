@@ -357,7 +357,7 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                             <div className={`absolute w-full px-8 text-center transition-all duration-300 pointer-events-none flex flex-col items-center justify-center
                                 ${position === 'top' ? 'top-20' : ''}
                                 ${position === 'middle' ? 'top-0 bottom-0' : ''}
-                                ${position === 'bottom' ? 'bottom-20' : ''}
+                                ${position === 'bottom' ? 'bottom-[26%]' : ''}
                             `}>
                                 <span style={fallbackPreviewStyle}>
                                     This is how your subtitles<br/>will appear on the video

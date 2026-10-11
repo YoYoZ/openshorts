@@ -23,7 +23,8 @@ const RTL_CHARS = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
 const POSITION_MAP: Record<string, React.CSSProperties> = {
   top: { top: "12%", bottom: "auto" },
   middle: { top: "45%", bottom: "auto" },
-  bottom: { bottom: "10%", top: "auto" },
+  // Clear of YouTube Shorts' bottom UI (same place as the burn, MarginV 75).
+  bottom: { bottom: "26%", top: "auto" },
 };
 
 export const Subtitles: React.FC<SubtitlesProps> = ({ config }) => {
@@ -72,7 +73,7 @@ interface SubtitleBlockProps {
 // Same rule as the burn (subtitles.fit_scale): a block whose widest word would
 // run past 92% of the frame is scaled down as a whole. Lines wrap on spaces,
 // so only a single word can overflow.
-const FIT_WIDTH_SHARE = 0.92;
+const FIT_WIDTH_SHARE = 0.76;
 let measureCtx: CanvasRenderingContext2D | null = null;
 const measureWord = (text: string, fontStack: string, fontSize: number): number => {
   if (typeof document === "undefined") return 0;
@@ -126,8 +127,9 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
     <div
       style={{
         position: "absolute",
-        left: 0,
-        right: 0,
+        // Off the right-hand button column, as the burn's MarginL/R (12%).
+        left: "12%",
+        right: "12%",
         display: "flex",
         justifyContent: "center",
         ...positionStyle,

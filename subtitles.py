@@ -264,6 +264,21 @@ def generate_srt(transcript, clip_start, clip_end, output_path, max_chars=20, ma
 # where they were partly covered on the platform even though the exported file
 # looked fine.
 SAFE_MARGIN_V = 43
+# Bottom captions sit higher still: YouTube Shorts covers roughly the bottom
+# 22% (title, channel, subscribe) and puts its like/comment/share column on the
+# right from ~38% to ~78% of the height. 75 units ends the block at ~74%.
+SAFE_MARGIN_BOTTOM = 75
+# Side margins keep wrapped lines off that right column (and centred). In
+# libass units of the default PlayResX (PlayResY * 4/3 = 384): 46 is 12%.
+SAFE_MARGIN_H = 46
+
+
+def _margin_v_for(ass_alignment, margin_v):
+    """Vertical margin for an ASS alignment: the bottom-safe one for bottom
+    captions when the caller kept the default."""
+    if margin_v == SAFE_MARGIN_V and int(ass_alignment) in (1, 2, 3):
+        return SAFE_MARGIN_BOTTOM
+    return int(_clamp_number(margin_v, 0, 200, SAFE_MARGIN_V))
 
 
 # The caption look applied automatically to every generated clip. Chosen by
@@ -348,7 +363,7 @@ _BUNDLED_FONTS = {"anton": "Anton-Regular.ttf",
 _FALLBACK_FONT_FILES = ("verdanab.ttf", "DejaVuSans-Bold.ttf")
 # Most of the frame width a caption line may take; the rest is breathing
 # room for the outline and the pop effect's 108% scale.
-FIT_WIDTH_SHARE = 0.92
+FIT_WIDTH_SHARE = 0.76   # frame width minus both SAFE_MARGIN_H
 _metrics_cache = {}
 
 
@@ -636,7 +651,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
             f"Style: Active,{safe_font},{final_fontsize},"
             f"{hex_to_ass_color(on_box, 1.0)},{hex_to_ass_color(on_box, 1.0)},"
             f"{box_colour},{box_colour},1,0,0,0,100,100,0,0,3,{pad},0,"
-            f"{ass_alignment},10,10,{int(_clamp_number(margin_v, 0, 200, SAFE_MARGIN_V))},1\n"
+            f"{ass_alignment},{SAFE_MARGIN_H},{SAFE_MARGIN_H},{_margin_v_for(ass_alignment, margin_v)},1\n"
         )
 
     header = (
@@ -653,7 +668,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{safe_font},{final_fontsize},{primary_colour},{primary_colour},"
         f"{outline_colour},{back_colour},1,0,0,0,100,100,0,0,{border_style},"
-        f"{outline_width},{shadow},{ass_alignment},10,10,{int(_clamp_number(margin_v, 0, 200, SAFE_MARGIN_V))},1\n"
+        f"{outline_width},{shadow},{ass_alignment},{SAFE_MARGIN_H},{SAFE_MARGIN_H},{_margin_v_for(ass_alignment, margin_v)},1\n"
         f"{active_style}"
         "\n"
         "[Events]\n"
@@ -822,7 +837,8 @@ def subtitles_filter(srt_path, alignment=2, fontsize=16,
         f"BorderStyle={border_style},"
         f"Outline={outline_width},"
         f"Shadow=0,"
-        f"MarginV={SAFE_MARGIN_V},"
+        f"MarginV={SAFE_MARGIN_BOTTOM if ass_alignment == 2 else SAFE_MARGIN_V},"
+        f"MarginL={SAFE_MARGIN_H},MarginR={SAFE_MARGIN_H},"
         f"Bold=1"
     )
 
