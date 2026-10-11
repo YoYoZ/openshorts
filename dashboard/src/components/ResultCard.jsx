@@ -44,7 +44,7 @@ const StepNo = ({ n, done }) => (
     <span className={`absolute top-1 left-1.5 readout text-[9px] ${done ? 'text-ok' : 'text-brass'}`}>{done ? `${n}✓` : n}</span>
 );
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -879,13 +879,15 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     }, [command]);
 
     return (
-        <div className={`card overflow-hidden flex flex-col md:flex-row group transition-colors animate-fade ${focus ? 'md:h-full' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`} style={{ animationDelay: `${focus ? 0 : index * 0.1}s` }}>
+        <div className={`card overflow-hidden flex flex-col ${stacked ? '' : 'md:flex-row'} group transition-colors animate-fade ${focus ? 'md:h-full' : stacked ? '' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`} style={{ animationDelay: `${focus ? 0 : index * 0.1}s` }}>
             {/* Left: Video Preview — 9:16 column matching the fixed card height */}
             {/* A full-width 9:16 preview on a phone is ~640px tall on its own,
                 which pushed the title, captions and every action off-screen.
                 Capping the height and centring keeps the whole card scannable
                 without letterboxing the clip. */}
-            <div className={`w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 bg-black relative shrink-0 aspect-[9/16] group/video ${focus ? 'md:h-full md:w-auto' : 'md:w-[236px] md:aspect-auto'}`}>
+            <div className={`bg-black relative shrink-0 aspect-[9/16] group/video ${stacked
+                ? 'w-full max-w-[min(300px,calc(52vh*0.5625))] mx-auto mt-4 rounded-input overflow-hidden'
+                : `w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 ${focus ? 'md:h-full md:w-auto' : 'md:w-[236px] md:aspect-auto'}`}`}>
                 <video
                     ref={videoRef}
                     src={showBefore && prevVideoUrl ? prevVideoUrl : playbackUrl}
@@ -1101,6 +1103,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
                 {/* Actions Footer */}
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 mt-auto pt-4 border-t border-rule">
+                    {/* The workspace has its own steps rail; the five step buttons live there. */}
+                    {!hideSteps && (<>
                     {onEditClip && (
                         <button
                             onClick={() => { videoRef.current?.pause(); onEditClip(index); }}
@@ -1152,6 +1156,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         <ChecksBadge summary={checks} className="absolute top-1 right-1.5 text-[9px]" />
                         check
                     </button>
+                    </>)}
 
                     <button
                         onClick={() => { videoRef.current?.pause(); handleAutoEdit(); }}
@@ -1162,20 +1167,22 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         {isEditing ? 'editing…' : 'auto edit'}
                     </button>
 
-                    <button
+                    {elevenLabsKey && <button
                         onClick={() => { videoRef.current?.pause(); setShowTranslateModal(true); }}
                         disabled={busy}
                         className={QUIET_BTN}
                     >
                         {isTranslating ? <Loader2 size={16} className="animate-spin text-brass shrink-0" /> : <Languages size={16} className="text-muted group-hover:text-brass transition-colors shrink-0" />}
                         {isTranslating ? 'translating…' : 'dub voice'}
-                    </button>
+                    </button>}
 
                     <button
-                        onClick={() => setShowModal(true)}
+                        onClick={() => (onSchedule ? onSchedule(index) : setShowModal(true))}
                         className="btn-primary flex-col gap-1 py-2.5 sm:py-2 px-1 text-[11px] leading-none rounded-input whitespace-nowrap"
+                        title={onSchedule ? 'upload to YouTube now or at a set time' : undefined}
                     >
-                        <Share2 size={16} className="shrink-0" /> post
+                        {onSchedule ? <Youtube size={16} className="shrink-0" /> : <Share2 size={16} className="shrink-0" />}
+                        {onSchedule ? (clip.youtube?.video_id ? 'on YouTube' : 'schedule') : 'post'}
                     </button>
                     <button
                         onClick={(e) => {

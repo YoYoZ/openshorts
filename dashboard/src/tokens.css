@@ -6,35 +6,37 @@
 
 :root {
   /* paper */
-  --color-paper: oklch(13% 0.014 265);
-  --color-paper-2: oklch(16.5% 0.015 265);
-  --color-paper-3: oklch(20% 0.016 265);
+  /* Darkroom (redesign): neutral near-black, one warm accent */
+  --color-paper: #0E0F11;
+  --color-paper-2: #141518;
+  --color-paper-3: #1E2125;
 
   /* ink */
-  --color-ink: oklch(96% 0.006 262);
-  --color-ink-2: oklch(86% 0.01 262);
-  --color-muted: oklch(64% 0.012 262);
+  --color-ink: #ECEDEE;
+  --color-ink-2: #C9CDD2;
+  --color-muted: #8E949C;
 
   /* rules */
-  --color-rule: oklch(96% 0.006 262 / 0.08);
-  --color-rule-2: oklch(96% 0.006 262 / 0.14);
+  --color-rule: #23262B;
+  --color-rule-2: #2E3238;
   --rule-blueprint: oklch(96% 0.006 262 / 0.04);
 
   /* accents */
-  --color-accent: oklch(76% 0.17 50);
-  --color-accent-ink: oklch(17% 0.03 50);
+  --color-accent: #F5A524;
+  --color-accent-ink: #1A1206;
   --color-accent-2: oklch(68% 0.16 18);
   --color-glow: oklch(80% 0.16 50 / 0.42);
-  --color-paper-emit: oklch(76% 0.17 50 / 0.04);
-  --color-focus: oklch(76% 0.17 50);
+  --color-paper-emit: transparent;
+  --color-focus: #F5A524;
 
   /* states */
-  --color-ok: oklch(75% 0.11 150);
-  --color-danger: oklch(66% 0.18 25);
-  --color-warn: oklch(78% 0.14 75);
+  --color-ok: #3FB97E;
+  --color-danger: #E5484D;
+  --color-warn: #E8B339;
+  --color-info: #4C9AFF;
 
   /* type */
-  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-display: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-body: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --text-display: clamp(3rem, 6vw + 1rem, 6rem);

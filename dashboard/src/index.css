@@ -103,7 +103,7 @@
   .input-field:focus { border-color: var(--color-accent); }
 
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium lowercase;
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium;
     background: var(--color-accent);
     color: var(--color-accent-ink);
     border-radius: 999px;
@@ -114,7 +114,7 @@
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium lowercase text-ink;
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium text-ink;
     background: transparent;
     border: 1px solid var(--color-rule-2);
     border-radius: 999px;
@@ -125,7 +125,7 @@
   .btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-quiet {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm lowercase text-ink2;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm text-ink2;
     background: var(--color-paper-3);
     border-radius: 999px;
     transition: filter var(--dur-short) var(--ease-out);
@@ -133,7 +133,7 @@
   .btn-quiet:hover { filter: brightness(1.15); }
 
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm lowercase;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm;
     color: var(--color-danger);
     border: 1px solid color-mix(in oklab, var(--color-danger) 40%, transparent);
     border-radius: 999px;

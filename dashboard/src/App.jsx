@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Upload, Sparkles, Youtube, Instagram, Share2, ChevronDown, Check, Activity, LayoutDashboard, Settings, Plus, History, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Mail, Loader2, Download, Menu, Lock, Rocket, ChevronLeft, ChevronRight } from 'lucide-react';
 import KeyInput from './components/KeyInput';
 import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
+import ClipRow from './components/ClipRow';
 import ProcessingAnimation from './components/ProcessingAnimation';
 import JobProgress from './components/JobProgress';
 import RecentProjects from './components/RecentProjects';
@@ -11,30 +12,39 @@ import StatusDock from './components/StatusDock';
 import SettingsPage from './components/SettingsPage';
 import FolderSettings from './components/FolderSettings';
 // import Gallery from './components/Gallery';
-import ThumbnailStudio from './components/ThumbnailStudio';
-import SaaShortsTab from './components/SaaShortsTab';
-import UGCGallery from './components/UGCGallery';
+const ThumbnailStudio = lazyPart(() => import('./components/ThumbnailStudio'));
+const SaaShortsTab = lazyPart(() => import('./components/SaaShortsTab'));
+const UGCGallery = lazyPart(() => import('./components/UGCGallery'));
 import ScheduleWeekModal from './components/ScheduleWeekModal';
 import ClipEditor from './components/ClipEditor';
 import ReframeEditor from './components/ReframeEditor';
-import UsageMeter from './components/UsageMeter';
-import TopUpModal from './components/TopUpModal';
+const UsageMeter = lazyPart(() => import('./components/UsageMeter'));
+const TopUpModal = lazyPart(() => import('./components/TopUpModal'));
 import WatermarkModal, { watermarkNoticeDismissed } from './components/WatermarkModal';
 import { getApiUrl } from './config';
-import PlanChoiceModal from './components/PlanChoiceModal';
-import ClipTutorial from './components/ClipTutorial';
-import OnboardingSurvey from './components/OnboardingSurvey';
-import TrialUpgradeModal from './components/TrialUpgradeModal';
-import LoginModal from './components/LoginModal';
-import TrialGate from './components/TrialGate';
-import AdvancedBanner from './components/AdvancedBanner';
-import HistoryTab from './components/HistoryTab';
-import AutopilotTab from './components/AutopilotTab';
-import ProfileMenu from './components/ProfileMenu';
+const PlanChoiceModal = lazyPart(() => import('./components/PlanChoiceModal'));
+const ClipTutorial = lazyPart(() => import('./components/ClipTutorial'));
+const OnboardingSurvey = lazyPart(() => import('./components/OnboardingSurvey'));
+const TrialUpgradeModal = lazyPart(() => import('./components/TrialUpgradeModal'));
+const LoginModal = lazyPart(() => import('./components/LoginModal'));
+const TrialGate = lazyPart(() => import('./components/TrialGate'));
+const AdvancedBanner = lazyPart(() => import('./components/AdvancedBanner'));
+const HistoryTab = lazyPart(() => import('./components/HistoryTab'));
+const AutopilotTab = lazyPart(() => import('./components/AutopilotTab'));
+const ProfileMenu = lazyPart(() => import('./components/ProfileMenu'));
 import Modal from './components/ui/Modal';
 import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
 import { track } from './lib/events';
+
+// Screens and dialogs that only the hosted edition or rare paths show: loaded
+// when first rendered instead of in the startup bundle.
+function lazyPart(loader) {
+  const Part = React.lazy(loader);
+  return function LazyPart(props) {
+    return <React.Suspense fallback={null}><Part {...props} /></React.Suspense>;
+  };
+}
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
@@ -438,13 +448,35 @@ function App() {
       return { ...prev, clips: prev.clips.map((c, i) => (i === index ? { ...c, ...patch } : c)) };
     });
   };
-  const toggleSelect = (index) => {
+  const toggleSelect = useCallback((index) => {
     setSelectedIdx((prev) => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index); else next.add(index);
       return next;
     });
-  };
+  }, []);
+  // The clip shown in the detail pane (original index); falls back to the
+  // first clip of the current filter when it is filtered out.
+  const [activeClip, setActiveClip] = useState(null);
+  const activeIdx = useMemo(() => {
+    if (!visibleClips.length) return null;
+    return visibleClips.some(({ index }) => index === activeClip) ? activeClip : visibleClips[0].index;
+  }, [visibleClips, activeClip]);
+  const [showProjectLogs, setShowProjectLogs] = useState(false);
+  const [projectTitle, setProjectTitle] = useState('');
+  useEffect(() => {
+    setActiveClip(null);
+    setProjectTitle('');
+    if (!jobId) return;
+    apiFetch('/api/local/projects').then((r) => r.json())
+      .then((list) => setProjectTitle((list || []).find((p) => p.job_id === jobId)?.title || ''))
+      .catch(() => {});
+  }, [jobId, status]);
+  // One clip into the schedule dialog (the card's YouTube button).
+  const scheduleOne = useCallback((index) => {
+    const clip = results?.clips?.[index];
+    if (clip) setScheduleSubset([{ ...clip, _index: index }]);
+  }, [results]);
   const bulkMeta = async (patch) => {
     setBulkBusy(true);
     for (const index of selectedIdx) {
@@ -1495,33 +1527,17 @@ function App() {
         <span className="font-display lowercase text-lg text-ink hidden lg:block">autoshortscut</span>
       </button>
 
-      <nav className="px-4 py-4 space-y-1 shrink-0">
-        {navItems.map((item) => {
-          const NavIcon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              data-tutorial={item.id === 'dashboard' ? 'nav-clips' : undefined}
-              onClick={() => goToTab(item.id)}
-              title={tabLocked(item.id) ? 'Finish your first clips to unlock' : item.label}
-              disabled={tabLocked(item.id)}
-              className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-input transition-colors ${isActive ? 'bg-paper3 text-ink' : 'text-muted hover:text-ink2 hover:bg-paper3/50'} ${tabLocked(item.id) ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-muted' : ''}`}
-            >
-              {isActive && (
-                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-brass rounded-full" aria-hidden="true" />
-              )}
-              <NavIcon size={18} className={`shrink-0 ${isActive ? 'text-brass' : ''}`} />
-              <span className="text-sm lowercase hidden lg:block flex-1 text-left truncate">{item.label}</span>
-              {tabLocked(item.id)
-                ? <Lock size={12} className="shrink-0 hidden lg:block" />
-                : item.byok ? <span className="readout hidden lg:block">BYOK</span>
-                  : item.isNew ? <span className="badge-brass hidden lg:block">new</span> : null}
-              <span className="readout hidden lg:block">{item.ord}</span>
-            </button>
-          );
-        })}
-      </nav>
+      <div className="px-3 lg:px-4 pb-3 shrink-0">
+        <button
+          type="button"
+          onClick={() => { handleReset(); goToTab('dashboard'); }}
+          title="New project"
+          className="btn-primary w-full h-10 px-0 lg:px-3 rounded-input text-sm"
+        >
+          <Plus size={16} />
+          <span className="hidden lg:inline">New project</span>
+        </button>
+      </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar hidden lg:block">
         <RecentProjects
@@ -1532,8 +1548,17 @@ function App() {
       </div>
       <div className="flex-1 lg:hidden" />
 
-      <div className="p-4 border-t border-rule">
+      <div className="p-3 lg:p-4 border-t border-rule space-y-3">
         <StatusDock onOpen={openProject} />
+        <button
+          type="button"
+          onClick={() => goToTab('settings')}
+          title="Settings"
+          className={`w-full flex items-center justify-center lg:justify-start gap-2.5 px-2 py-2 rounded-input text-sm transition-colors ${activeTab === 'settings' ? 'bg-paper3 text-ink' : 'text-muted hover:text-ink2 hover:bg-paper3/50'}`}
+        >
+          <Settings size={16} className="shrink-0" />
+          <span className="hidden lg:inline">Settings</span>
+        </button>
       </div>
     </div>
   );
@@ -1670,7 +1695,7 @@ function App() {
             {status !== 'idle' && (
               <button
                 onClick={handleReset}
-                className="btn-quiet px-3 py-1.5 text-xs shrink-0"
+                className="md:hidden btn-quiet px-3 py-1.5 text-xs shrink-0"
                 aria-label="New Project"
               >
                 <Plus size={14} />
@@ -2013,8 +2038,11 @@ function App() {
           {activeTab === 'dashboard' && (status === 'processing' || status === 'complete' || status === 'error') && (
             <div className="h-full flex flex-col md:flex-row gap-3 md:gap-4 p-3 md:p-4 overflow-y-auto md:overflow-y-hidden custom-scrollbar animate-fade">
 
-              {/* Left Panel: Preview & Status */}
-              <div className={`${status === 'complete' ? 'w-full md:w-[30%] lg:w-[25%]' : 'w-full md:w-[55%] lg:w-[60%]'} md:h-full flex flex-col shrink-0 md:shrink card p-3.5 sm:p-6 md:overflow-y-auto custom-scrollbar transition-all duration-700 ease-in-out`}>
+              {/* Left Panel: progress and logs. Not mounted at all for a finished
+                  project unless asked for: its source preview is a second
+                  <video> decoding the whole source. */}
+              {(status !== 'complete' || showProjectLogs) && (
+              <div className={`${status === 'complete' ? (showProjectLogs ? 'w-full md:w-[30%] lg:w-[25%]' : 'hidden') : 'w-full md:w-[55%] lg:w-[60%]'} md:h-full flex flex-col shrink-0 md:shrink card p-3.5 sm:p-6 md:overflow-y-auto custom-scrollbar`}>
                 <div className="mb-4 sm:mb-6 flex items-center justify-between gap-2">
                   <h2 className="text-sm font-medium text-ink lowercase flex items-center gap-2">
                     <Activity className={`text-brass ${status === 'processing' ? 'animate-pulse' : ''}`} size={18} />
@@ -2142,45 +2170,35 @@ function App() {
                   )}
                 </div>
               </div>
+              )}
 
               {/* Right Panel: Results Grid */}
-              <div className={`${status === 'complete' ? 'w-full md:w-[70%] lg:w-[75%]' : 'w-full md:w-[45%] lg:w-[40%]'} md:h-full flex flex-col shrink-0 md:shrink card p-3.5 sm:p-6 transition-all duration-700 ease-in-out`}>
-                {/* Title + counters on one row, the two actions on their own row
-                    below. Wrapping them all together dropped a lone half-width
-                    "schedule week" pill under the title on a phone. */}
-                <div className="mb-4 sm:mb-6 shrink-0 space-y-3">
-                  <h2 className="font-display lowercase text-lg sm:text-xl text-ink flex flex-wrap items-center gap-2">
-                    <span className="mr-auto">Generated Shorts</span>
-                    {results?.clips?.length > 0 && (
-                      <span className="readout bg-paper3 px-2.5 py-1 rounded-full">
-                        {results.clips.length} Clips
-                      </span>
-                    )}
-                    {results?.cost_analysis && !isManaged && (
-                      <span className="readout bg-paper3 px-2.5 py-1 rounded-full" title={`Input: ${results.cost_analysis.input_tokens} | Output: ${results.cost_analysis.output_tokens}`}>
-                        {(results.cost_analysis.model || 'llm').toUpperCase()} · ${results.cost_analysis.total_cost.toFixed(4)}
-                      </span>
-                    )}
-                  </h2>
+              <div className={`${status === 'complete' ? 'w-full flex-1 min-w-0' : 'w-full md:w-[45%] lg:w-[40%]'} md:h-full flex flex-col shrink-0 md:shrink card overflow-hidden`}>
+                <div className="shrink-0 flex flex-wrap items-center gap-3 px-4 sm:px-6 py-4 border-b border-rule">
+                  <div className="min-w-0 flex-1 basis-[320px]">
+                    <h2 className="text-lg font-semibold tracking-tight text-ink truncate" title={projectTitle || ''}>
+                      {projectTitle || (status === 'processing' ? 'Processing…' : 'Clips')}
+                    </h2>
+                    <p className="text-xs text-muted mt-0.5 truncate">
+                      {[
+                        results?.clips?.length ? `${results.clips.length} clips` : null,
+                        results?.cost_analysis ? `${results.cost_analysis.model || 'AI'} · $${Number(results.cost_analysis.total_cost || 0).toFixed(3)}` : null,
+                        status === 'processing' ? 'clips appear as they finish' : null,
+                      ].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
                   {results?.clips?.length > 0 && status === 'complete' && (
-                    <div className="flex flex-col sm:flex-row sm:justify-end items-stretch sm:items-center gap-2">
-                      <button
-                        onClick={handleDownloadAll}
-                        disabled={downloadingAll}
-                        className="btn-ghost px-3 py-2 text-xs"
-                        title="Download all clips as a ZIP"
-                      >
-                        {downloadingAll
-                          ? <><Loader2 size={14} className="animate-spin" />zipping…</>
-                          : <><Download size={14} />download all</>}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={() => setShowProjectLogs((v) => !v)}
+                        className={`btn-ghost px-3 py-1.5 text-xs ${showProjectLogs ? 'border-brass text-ink' : ''}`}>
+                        <Terminal size={13} /> logs
+                      </button>
+                      <button onClick={handleDownloadAll} disabled={downloadingAll} className="btn-ghost px-3 py-1.5 text-xs" title="Download all clips as a ZIP">
+                        {downloadingAll ? <><Loader2 size={13} className="animate-spin" />zipping…</> : <><Download size={13} />Download all</>}
                       </button>
                       {results.clips.length > 1 && (
-                        <button
-                          onClick={() => setShowScheduleWeek(true)}
-                          className="btn-primary px-4 py-2 text-xs"
-                        >
-                          <Calendar size={14} />
-                          schedule week
+                        <button onClick={() => setShowScheduleWeek(true)} className="btn-primary px-4 py-1.5 text-xs">
+                          <Calendar size={13} /> Schedule week
                         </button>
                       )}
                     </div>
@@ -2188,7 +2206,7 @@ function App() {
                 </div>
 
                 {status === 'complete' && results?.clips?.length > 0 && (
-                  <div className="mb-2 space-y-2">
+                  <div className="px-4 sm:px-6 pt-3 space-y-2 empty:hidden">
                     {/* Partial job: the clips on screen come from the first N
                         minutes only. Say so, and sell the rest of the video. */}
                     {partialJob && (
@@ -2277,7 +2295,7 @@ function App() {
                 )}
 
                 {status === 'complete' && results?.clips?.length > 0 && (
-                  <div className="mb-3 shrink-0 flex flex-wrap items-center gap-1.5">
+                  <div className="shrink-0 flex flex-wrap items-center gap-1.5 px-4 sm:px-6 py-3 border-b border-rule">
                     {[['all', 'all'], ['todo', 'to edit'], ['done', 'done'], ['scheduled', 'scheduled'], ['published', 'published'], ['rejected', 'rejected']].map(([key, label]) => (
                       (key === 'all' || clipCounts[key] > 0) && (
                         <button key={key} type="button" onClick={() => setClipFilter(key)}
@@ -2307,7 +2325,7 @@ function App() {
                   </div>
                 )}
                 {selectedIdx.size > 0 && (
-                  <div className="mb-3 shrink-0 flex flex-wrap items-center gap-2 px-3 py-2 rounded-input bg-paper3 border border-brass/40 text-xs">
+                  <div className="shrink-0 flex flex-wrap items-center gap-2 mx-4 sm:mx-6 mt-3 px-3 py-2 rounded-input bg-paper3 border border-brass/40 text-xs">
                     <span className="text-ink2 mr-auto">{selectedIdx.size} selected</span>
                     <button type="button" disabled={bulkBusy} onClick={() => bulkMeta({ done: true })} className="btn-ghost px-2.5 py-1 text-xs">
                       <Check size={12} /> mark done
@@ -2336,30 +2354,48 @@ function App() {
                   </div>
                 )}
 
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-1">
-                  {results && results.clips && results.clips.length > 0 ? (
-                    <div className={`grid gap-4 pb-10 ${status === 'complete' ? 'grid-cols-[repeat(auto-fill,minmax(min(100%,600px),1fr))]' : 'grid-cols-1'}`}>
+                <div className="flex-1 min-h-0 flex flex-col md:flex-row">
+                  {results && results.clips && results.clips.length > 0 ? (<>
+                    {/* The list: light rows only. */}
+                    <div className="md:flex-1 min-w-0 overflow-y-auto custom-scrollbar p-2 sm:p-3 space-y-0.5 max-h-[45vh] md:max-h-none">
                       {visibleClips.length === 0 && (
-                        <p className="text-sm text-muted py-8 text-center col-span-full">No clips here.</p>
+                        <p className="text-sm text-muted py-8 text-center">No clips here.</p>
                       )}
                       {visibleClips.map(({ clip, index: i }) => (
-                        <ResultCard
-                          key={`${jobId}-${i}-${clip.video_url || ''}`}
+                        <ClipRow
+                          key={`${jobId}-${i}`}
                           clip={clip}
                           index={i}
-                          jobId={jobId}
+                          status={clipStatus(clip)}
+                          active={i === activeIdx}
                           selected={selectedIdx.has(i)}
-                          onSelect={status === 'complete' ? toggleSelect : null}
-                          onOpenFocus={status === 'complete' ? (idx) => setFocusIdx(idx) : null}
-                          onClipPatch={patchClip}
                           checks={clipChecks[i] || null}
+                          onOpen={setActiveClip}
+                          onToggleSelect={status === 'complete' ? toggleSelect : null}
+                        />
+                      ))}
+                    </div>
+                    {/* The one clip with a player. */}
+                    {activeIdx !== null && results.clips[activeIdx] && (
+                      <div className="md:w-[440px] lg:w-[480px] shrink-0 border-t md:border-t-0 md:border-l border-rule overflow-y-auto custom-scrollbar p-3 sm:p-4">
+                        <ResultCard
+                          key={`${jobId}-${activeIdx}-${results.clips[activeIdx].video_url || ''}`}
+                          clip={results.clips[activeIdx]}
+                          index={activeIdx}
+                          stacked
+                          selected={selectedIdx.has(activeIdx)}
+                          onOpenFocus={status === 'complete' ? (idx) => setFocusIdx(idx) : null}
+                          jobId={jobId}
+                          onClipPatch={patchClip}
+                          checks={clipChecks[activeIdx] || null}
                           onChecks={onChecks}
                           onEditClip={(index) => setEditingClip(index)}
                           onReframeClip={(index) => setReframingClip(index)}
+                          onSchedule={scheduleOne}
                           onUpgrade={isManaged ? openUpsell : null}
-                          initialState={projectState?.clips?.find((c) => c.index === i) || null}
+                          initialState={projectState?.clips?.find((c) => c.index === activeIdx) || null}
                           onStateChange={handleClipStateChange}
-                          durable={durableClips[i]}
+                          durable={durableClips[activeIdx]}
                           uploadPostKey={uploadPostKey}
                           uploadUserId={uploadUserId}
                           geminiApiKey={apiKey}
@@ -2375,19 +2411,25 @@ function App() {
                           onBulkHook={handleBulkHooks}
                           bulkHookProgress={bulkHook}
                         />
-                      ))}
-                    </div>
-                  ) : (
+                        {status === 'complete' && (
+                          <button type="button" onClick={() => setFocusIdx(activeIdx)}
+                            className="btn-ghost w-full mt-3 py-2 text-xs">
+                            Open in workspace · keyboard shortcuts
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>) : (
                     status === 'processing' ? (
-                      <div className="h-full min-h-[140px] flex flex-col items-center justify-center text-muted space-y-3 text-center px-4">
+                      <div className="flex-1 min-h-[140px] flex flex-col items-center justify-center text-muted space-y-3 text-center px-4">
                         <Loader2 size={28} className="animate-spin text-brass" />
-                        <p className="text-sm lowercase">Waiting for clips...</p>
+                        <p className="text-sm">Waiting for clips…</p>
                         <p className="text-xs text-muted/80 max-w-[26ch] leading-snug">
                           They appear here one by one as each finishes rendering.
                         </p>
                       </div>
                     ) : status === 'error' ? (
-                      <div className="h-full min-h-[120px] flex flex-col items-center justify-center text-danger space-y-2">
+                      <div className="flex-1 min-h-[120px] flex flex-col items-center justify-center text-danger space-y-2">
                         <p>Generation failed.</p>
                       </div>
                     ) : null
@@ -2469,10 +2511,7 @@ function App() {
               <span className="readout text-xs text-muted">
                 clip #{focusIdx + 1}{pos >= 0 ? ` · ${pos + 1} of ${visibleClips.length}` : ''} · {clipStatus(clip).replace('todo', 'to edit')}
               </span>
-              <span className="hidden lg:block ml-auto text-[11px] text-muted readout">
-                space/K play · J/L ±2s · ←/→ clip · 1 trim · 2 frame · 3 subtitles · 4 hook · 5 check · O done · S safe zone · H before/after · Esc close
-              </span>
-              <div className="flex gap-1.5 ml-auto lg:ml-3">
+              <div className="flex gap-1.5 ml-auto">
                 <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs">
                   <ChevronLeft size={14} /> prev
                 </button>
@@ -2481,9 +2520,40 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6">
+            <div className="flex-1 min-h-0 flex flex-col md:flex-row">
+              {/* Steps rail: drives the same editors as the keys 1–5. */}
+              <nav aria-label="Editing steps" className="md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-rule p-2 md:p-3 flex md:flex-col gap-1 overflow-x-auto">
+                {[
+                  ['edit', 'Trim', '1', !!clip.recipe],
+                  ['frame', 'Framing', '2', !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length))],
+                  ['subs', 'Subtitles', '3', !!(clip.caption_style || clip.caption_words)],
+                  ['hook', 'Hook', '4', !!clip.auto_hook?.text],
+                  ['check', 'Check', '5', !!clipChecks[focusIdx] && !clipChecks[focusIdx].fail && !clipChecks[focusIdx].warn],
+                ].map(([name, label, key, isDone]) => {
+                  const warn = name === 'check' && (clipChecks[focusIdx]?.fail || clipChecks[focusIdx]?.warn);
+                  return (
+                    <button key={name} type="button" onClick={() => setFocusCmd((prev) => ({ name, n: (prev?.n || 0) + 1 }))}
+                      className="flex items-center gap-2.5 h-10 px-2.5 rounded-input text-sm text-ink2 hover:bg-paper3 hover:text-ink shrink-0 md:w-full">
+                      <span className={`w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs ${isDone ? 'bg-ok/15 text-ok' : warn ? 'bg-warn/15 text-warn' : 'bg-paper3 text-muted'}`}>
+                        {isDone ? '✓' : warn ? '!' : key}
+                      </span>
+                      <span className="flex-1 text-left">{label}</span>
+                      <span className="hidden md:inline font-mono text-[11px] text-muted">{key}</span>
+                    </button>
+                  );
+                })}
+                <div className="hidden md:flex flex-col gap-1.5 mt-auto pt-3 border-t border-rule text-[11px] text-muted leading-snug">
+                  <span>Space play · J / L ±2 s</span>
+                  <span>← / → clip · O done</span>
+                  <span>S safe zone · H before/after</span>
+                  <span>Esc close</span>
+                </div>
+              </nav>
+              <div className="flex-1 min-w-0 overflow-y-auto p-3 sm:p-6">
               <div className="max-w-6xl mx-auto md:h-full">
                 <ResultCard
+                  hideSteps
+                  onSchedule={scheduleOne}
                   key={`focus-${jobId}-${focusIdx}-${clip.video_url || ''}`}
                   clip={clip}
                   index={focusIdx}
@@ -2509,6 +2579,7 @@ function App() {
                   onBulkHook={handleBulkHooks}
                   bulkHookProgress={bulkHook}
                 />
+              </div>
               </div>
             </div>
           </div>

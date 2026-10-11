@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import RemotionPreview from './RemotionPreview';
+// The Remotion player is the heaviest part of the bundle: load it when this
+// editor first opens, not with the app.
+const RemotionPreviewLazy = React.lazy(() => import('./RemotionPreview'));
+function RemotionPreview(props) {
+    return <React.Suspense fallback={<div className="w-full h-full bg-black" />}><RemotionPreviewLazy {...props} /></React.Suspense>;
+}
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
 
