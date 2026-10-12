@@ -72,6 +72,7 @@ def main() -> int:
 
         cookies_path = _find_cookies_path()
         base_opts = {
+            'js_runtimes': {'deno': {}, 'node': {}},   # YouTube's JS challenge (see main.py)
             'quiet': True,
             'no_warnings': False,
             'logger': _CollectLogger(),

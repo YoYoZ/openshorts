@@ -16,7 +16,9 @@ _PATH_RE = re.compile(r'(?:/?[\w.\-]+/)+[\w.\-]+')
 
 
 def _strip_paths(line):
-    return _PATH_RE.sub('', line).rstrip(' :')
+    # Counters like "attempt 1/3" or "2/3 batches" look like paths but are not.
+    return _PATH_RE.sub(lambda m: m.group(0) if re.fullmatch(r'[\d/.\-]+', m.group(0)) else '',
+                        line).rstrip(' :')
 
 
 # Ordered rules; first match wins: (pattern, template, progress kind).
@@ -36,7 +38,7 @@ _RULES = [
     # Live transcription progress emitted by transcribe_backends.
     (re.compile(r'Transcribing… (\d+)%'), '🎙️ Transcribing audio… {0}%', 'asr'),
     (re.compile(r'Transcribing (video|audio)'), '🎙️ Transcribing audio…', 'asr'),
-    (re.compile(r'Analyzing with (?:Gemini|local LLM)'), '🤖 Finding the best moments…', None),
+    (re.compile(r'Analyzing with (?:Gemini|local LLM|the model chain)'), '🤖 Finding the best moments…', None),
     (re.compile(r'Silent video — analyzing'), '🎥 No speech — finding moments in the picture…', None),
     (re.compile(r'Choosing a layout'), '🎛️ Choosing the layout…', None),
     (re.compile(r'Found (\d+) (?:viral )?clips'), '🔥 Found {0} clips!', None),

@@ -926,6 +926,10 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             'cookiefile': cookies_path if (cookies and cookies_path) else None,
             'proxy': proxy, 'socket_timeout': 30, 'retries': 10, 'fragment_retries': 10,
             'nocheckcertificate': True, 'cachedir': False,
+            # YouTube's player hides most formats behind a JS challenge: let
+            # yt-dlp solve it with Deno (installed with yt-dlp[deno]) or Node.
+            # Without a runtime it only sees a subset (often no HD).
+            'js_runtimes': {'deno': {}, 'node': {}},
             # A `watch?v=X&list=...` link is the one video the user was
             # watching, not the playlist: without this yt-dlp downloads every
             # entry of the list into the SAME outtmpl (the title is the
@@ -2011,7 +2015,7 @@ def get_viral_clips(transcript_result, video_duration):
         # Self-hosted text model: no Google key needed for this stage.
         client = None
         model_name = llm_backend.model_name()
-        print(f"\U0001f916  Analyzing with local LLM at {llm_backend.base_url()} (2-pass: score → detail)...")
+        print(f"\U0001f916  Analyzing with the model chain: {llm_backend.base_url()} (2-pass: score → detail)...")
     else:
         print("\U0001f916  Analyzing with Gemini (2-pass: score → detail)...")
         api_key = os.getenv("GEMINI_API_KEY")

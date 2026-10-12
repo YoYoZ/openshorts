@@ -3721,8 +3721,14 @@ def _project_title(job_path, meta_path, job):
     if sources:
         return os.path.splitext(sources[0])[0].replace("_", " ")
     cmd = (job or {}).get('cmd') or []
-    if "-u" in cmd:
-        return cmd[cmd.index("-u") + 1]
+    # The URL is the value after main.py's "-u"; the first "-u" in the
+    # command is python's own unbuffered flag (its value was main.py's path).
+    for i, arg in enumerate(cmd[:-1]):
+        if arg in ("-u", "--url") and str(cmd[i + 1]).startswith(("http://", "https://")):
+            return cmd[i + 1]
+    for i, arg in enumerate(cmd[:-1]):
+        if arg == "-i":
+            return os.path.splitext(os.path.basename(str(cmd[i + 1])))[0].replace("_", " ")
     return None
 
 

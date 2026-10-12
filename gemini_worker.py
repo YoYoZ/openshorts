@@ -417,7 +417,21 @@ def _parse_json_response_text(text: str) -> dict:
             return json.loads(parse_candidate)
         except json.JSONDecodeError as e:
             last_error = e
-    raise ValueError(f"Failed to parse Gemini JSON response: {last_error}")
+    # "Extra data": a complete object followed by more text or a second
+    # object (Claude sometimes appends a note or a repeat after the answer).
+    # The first complete object is the answer.
+    decoder = json.JSONDecoder()
+    for parse_candidate in parse_attempts:
+        start = parse_candidate.find("{")
+        if start < 0:
+            continue
+        try:
+            obj, _end = decoder.raw_decode(parse_candidate[start:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError as e:
+            last_error = e
+    raise ValueError(f"Failed to parse the model's JSON response: {last_error}")
 
 
 def upload_media(client, path, mime_type=None):

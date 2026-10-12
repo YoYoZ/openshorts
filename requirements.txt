@@ -4,7 +4,7 @@ ultralytics==8.4.46
 torch==2.11.0
 torchvision==0.26.0
 tqdm==4.67.3
-yt-dlp
+yt-dlp[default,deno]  # + yt-dlp-ejs and Deno: YouTube's JS challenge, without which HD formats go missing
 faster-whisper==1.2.1
 av<16  # faster-whisper 1.2.1 passes metadata_errors, removed in PyAV 16+
 py3langid==0.3.0
