@@ -3891,16 +3891,21 @@ class YouTubeUploadRequest(BaseModel):
     timezone: Optional[str] = "UTC"
     privacy: Optional[str] = "private"   # used only when not scheduled
     force: Optional[bool] = False         # upload again even if already uploaded
+    account: Optional[str] = None         # youtube_upload account; None = project's / default
 
 
 @app.get("/api/youtube/status")
 async def youtube_status():
     import youtube_upload
-    try:
-        ch = await asyncio.to_thread(youtube_upload.channel)
-        return {"connected": True, "channel": ch}
-    except Exception as e:
-        return {"connected": False, "error": str(e)[:300]}
+    # Every connected channel; "channel" stays the default one for old callers.
+    chans = await asyncio.to_thread(youtube_upload.channels)
+    default = youtube_upload.default_account()
+    ok = [c for c in chans if not c.get("error")]
+    if not ok:
+        return {"connected": False, "accounts": chans,
+                "error": (chans[0].get("error") if chans else "no YouTube channel connected")}
+    first = next((c for c in ok if c["account"] == default), ok[0])
+    return {"connected": True, "channel": first, "accounts": chans, "default_account": first["account"]}
 
 
 def _clip_metadata(job_id):
@@ -3909,6 +3914,15 @@ def _clip_metadata(job_id):
         raise HTTPException(status_code=404, detail="Project metadata not found")
     with open(metas[0], encoding="utf-8") as f:
         return metas[0], json.load(f)
+
+
+@app.get("/api/youtube/project/{job_id}")
+async def youtube_project_account(job_id: str):
+    """The channel this project posts to (set by its last upload), or None."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    _, data = _clip_metadata(job_id)
+    return {"account": data.get("youtube_account")}
 
 
 @app.post("/api/youtube/upload")
@@ -3946,7 +3960,13 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
         publish_at = utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     import settings_store
-    yt = settings_store.load()["youtube"]
+    # The channel: asked for, else the one this project posted to, else the default.
+    account = req.account or data.get("youtube_account") or youtube_upload.default_account()
+    if account not in youtube_upload.accounts():
+        raise HTTPException(status_code=400, detail=f"YouTube channel '{account}' is not connected")
+    yt_all = settings_store.load()["youtube"]
+    yt = {**{k: v for k, v in yt_all.items() if k != "channels"},
+          **{k: v for k, v in ((yt_all.get("channels") or {}).get(account) or {}).items() if v not in (None, "")}}
     title = (req.title or clip.get("video_title_for_youtube_short") or "Short").strip()
     description = req.description
     if description is None:
@@ -3976,7 +3996,7 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
             ops_update = lambda pct: render_ops._update(req.job_id, pct=round(pct, 1))
             video = await asyncio.to_thread(
                 youtube_upload.upload, path, title, description, tags, publish_at,
-                privacy, str(yt.get("category") or "28"), language, ops_update)
+                privacy, str(yt.get("category") or "28"), language, ops_update, account)
     except youtube_upload.QuotaExceeded as e:
         raise HTTPException(status_code=429, detail=str(e))
     except youtube_upload.NotConnected as e:
@@ -3986,10 +4006,16 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
 
     record = {"video_id": video.get("id"), "url": f"https://youtu.be/{video.get('id')}",
               "publish_at": publish_at, "privacy": (video.get("status") or {}).get("privacyStatus"),
-              "uploaded_at": int(time.time()), "file": name}
+              "uploaded_at": int(time.time()), "file": name, "account": account}
+    try:
+        ch = await asyncio.to_thread(youtube_upload.channel, account)
+        record["channel"] = ch.get("title")
+    except Exception:
+        pass
     # Re-read before writing: another request may have touched the metadata.
     meta_path, data = _clip_metadata(req.job_id)
     data["shorts"][req.clip_index]["youtube"] = record
+    data["youtube_account"] = account   # the project keeps posting to this channel
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)  # ASCII-escaped: other readers open it without an encoding
     job = jobs.get(req.job_id)

@@ -1,7 +1,10 @@
 """Connect a YouTube channel: turn a Google OAuth client file into the
 ``youtube_auth/token.json`` that youtube_upload.py uses.
 
-    python youtube_auth.py path/to/client_secret.json [--out DIR]
+    python youtube_auth.py path/to/client_secret.json [--out DIR] [--name NAME]
+
+--name adds another channel (accounts/NAME.json) instead of replacing the
+first one (token.json); the app lists every connected channel.
 
 Opens Google's consent page in the browser, catches the answer on a
 localhost port, exchanges it for a refresh token and writes token.json.
@@ -70,7 +73,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("client_secret", help="OAuth client JSON downloaded from Google Cloud")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_auth"),
-                    help="folder to write token.json into")
+                    help="the youtube_auth folder")
+    ap.add_argument("--name", default=None,
+                    help="add this channel as another account (accounts/NAME.json)")
     args = ap.parse_args()
 
     client_id, client_secret = _client(args.client_secret)
@@ -96,8 +101,14 @@ def main():
     if r.status_code != 200 or not tok.get("refresh_token"):
         sys.exit(f"Token exchange failed: {tok.get('error_description') or tok}")
 
-    os.makedirs(args.out, exist_ok=True)
-    path = os.path.join(args.out, "token.json")
+    if args.name:
+        safe = "".join(c for c in args.name if c.isalnum() or c in "-_") or "channel"
+        folder = os.path.join(args.out, "accounts")
+        path = os.path.join(folder, f"{safe}.json")
+    else:
+        folder = args.out
+        path = os.path.join(folder, "token.json")
+    os.makedirs(folder, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"client_id": client_id, "client_secret": client_secret,
                    "refresh_token": tok["refresh_token"], "token_uri": TOKEN_URL,

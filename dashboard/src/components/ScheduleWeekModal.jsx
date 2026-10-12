@@ -91,7 +91,9 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
     const [cadence, setCadence] = useState('daily');
     const [timezone, setTimezone] = useState(detectTimezone);
     const [startOffset, setStartOffset] = useState(1);
-    const [yt, setYt] = useState(null);   // {connected, channel} from /api/youtube/status
+    const [yt, setYt] = useState(null);   // {connected, channel, accounts} from /api/youtube/status
+    const [account, setAccount] = useState(null);   // which channel these clips go to
+    const ytSettings = React.useRef({});
 
     // Slot for the i-th clip: day offset from the start day and the time.
     const schedule = useMemo(() => {
@@ -123,22 +125,44 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
             setDone(false);
             setProgress({ current: 0, total: 0, results: [] });
             setYt(null);
-            // Post time, timezone and cadence default to Settings → YouTube.
-            apiFetch('/api/settings').then((r) => r.json()).then((s) => {
-                const yt = s?.youtube || {};
-                if (yt.default_time) setTime(yt.default_time);
-                if (yt.timezone) setTimezone(yt.timezone);
-                if (yt.cadence) setCadence(yt.cadence);
-            }).catch(() => {});
-            apiFetch('/api/youtube/status').then((r) => r.json()).then(setYt)
-                .catch(() => setYt({ connected: false, error: 'backend unreachable' }));
+            setAccount(null);
+            // The channel: the one this project already posts to, else the
+            // default; its post time, timezone and cadence come from
+            // Settings → YouTube (that channel's own values first).
+            Promise.all([
+                apiFetch('/api/settings').then((r) => r.json()).catch(() => ({})),
+                apiFetch('/api/youtube/status').then((r) => r.json())
+                    .catch(() => ({ connected: false, error: 'backend unreachable' })),
+                jobId ? apiFetch(`/api/youtube/project/${jobId}`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
+                    : Promise.resolve({}),
+            ]).then(([s, status, proj]) => {
+                ytSettings.current = s?.youtube || {};
+                setYt(status);
+                const ok = (status.accounts || []).filter((a) => !a.error).map((a) => a.account);
+                const first = ok.includes(proj?.account) ? proj.account : (status.default_account || ok[0] || null);
+                setAccount(first);
+            });
         }
         prevOpen.current = isOpen;
-    }, [isOpen]);
+    }, [isOpen, jobId]);
+
+    // The chosen channel's post time, timezone and cadence (its own values
+    // first, the shared ones otherwise).
+    React.useEffect(() => {
+        if (!account) return;
+        const base = ytSettings.current || {};
+        const own = (base.channels || {})[account] || {};
+        const pick = (k) => (own[k] !== undefined && own[k] !== null && own[k] !== '' ? own[k] : base[k]);
+        if (pick('default_time')) setTime(pick('default_time'));
+        if (pick('timezone')) setTimezone(pick('timezone'));
+        if (pick('cadence')) setCadence(pick('cadence'));
+    }, [account]);
 
     if (!isOpen) return null;
 
     const selectedPlatforms = ['youtube'];
+    const channelsOk = (yt?.accounts || []).filter((a) => !a.error);
+    const chosen = channelsOk.find((a) => a.account === account) || yt?.channel;
     const canPost = !!yt?.connected;
 
     // One clip a day, uploaded in order. Clips already on YouTube are skipped
@@ -166,7 +190,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
                 const res = await apiFetch('/api/youtube/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ job_id: jobId, clip_index: clipIndex, scheduled_local: scheduledLocal, timezone }),
+                    body: JSON.stringify({ job_id: jobId, clip_index: clipIndex, scheduled_local: scheduledLocal, timezone, account }),
                 });
                 const body = await res.json().catch(() => ({}));
                 if (res.status === 429) {
@@ -260,11 +284,24 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, onSch
                 </div>
             )}
             {yt?.connected && (
-                <p className="text-xs text-muted mb-4">
-                    Posting to <span className="text-ink2">{yt.channel?.title}</span>
-                    {yt.channel?.handle ? ` (${yt.channel.handle})` : ''}. Each clip uploads now as private
-                    and goes public at its time.
-                </p>
+                <div className="mb-4 space-y-2">
+                    {channelsOk.length > 1 && (
+                        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="channel">
+                            {channelsOk.map((a) => (
+                                <button key={a.account} type="button" role="radio" aria-checked={a.account === account}
+                                    onClick={() => setAccount(a.account)} disabled={scheduling}
+                                    className={`px-3 py-2 rounded-input border text-sm text-left ${a.account === account ? 'border-brass bg-paper3 text-ink' : 'border-rule2 text-ink2 hover:border-muted'}`}>
+                                    {a.title}{a.handle && <span className="block text-[11px] text-muted">{a.handle}</span>}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    <p className="text-xs text-muted">
+                        Posting to <span className="text-ink2">{chosen?.title}</span>
+                        {chosen?.handle ? ` (${chosen.handle})` : ''}. Each clip uploads now as private
+                        and goes public at its time.
+                    </p>
+                </div>
             )}
 
             {/* Time + Timezone */}

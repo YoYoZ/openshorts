@@ -77,6 +77,11 @@ DEFAULTS = {
         "privacy": "private", "category": "28", "tags": "",
         "description_template": "{description}\n\nПовне відео: {source_url}\n\n#Shorts",
         "default_time": "18:00", "timezone": "Europe/Kyiv", "cadence": "daily",
+        # Several channels (youtube_upload.accounts): which one new projects
+        # post to, and per-channel overrides of the fields above
+        # ({account: {description_template, tags, category, privacy, ...}}).
+        "default_account": None,
+        "channels": {},
     },
     "download": {"youtube_cookies": ""},
     # Disk housekeeping (render_gc.py and app.cleanup_jobs). Deleting whole

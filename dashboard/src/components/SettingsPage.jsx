@@ -477,48 +477,92 @@ function YouTubeSection({ settings, onSaved }) {
     const s = useSection(settings, 'youtube', onSaved);
     const d = s.draft || {};
     const [conn, setConn] = useState(null);
+    const [picked, setPicked] = useState(null);
     useEffect(() => {
-        apiFetch('/api/youtube/status').then((r) => r.json()).then(setConn).catch(() => setConn({ connected: false }));
+        apiFetch('/api/youtube/status').then((r) => r.json()).then(setConn).catch(() => setConn({ connected: false, accounts: [] }));
     }, []);
+    const accounts = conn?.accounts || [];
+    const defaultAccount = d.default_account && accounts.some((a) => a.account === d.default_account)
+        ? d.default_account : conn?.default_account || accounts[0]?.account;
+    const acc = picked || defaultAccount;
+    // Each channel has its own values; a field it never set falls back to the
+    // shared ones (what this section held before there were several channels).
+    const own = (d.channels || {})[acc] || {};
+    const val = (k) => (own[k] !== undefined && own[k] !== null && own[k] !== '' ? own[k] : d[k]);
+    const set = (patch) => {
+        if (!acc) { s.set(patch); return; }
+        s.set({ channels: { ...(d.channels || {}), [acc]: { ...own, ...patch } } });
+    };
     return (
         <div className="space-y-5">
-            <div className="rounded-input border border-rule p-3 text-sm">
-                {conn === null ? <span className="text-muted">checking connection…</span>
-                    : conn.connected ? <span className="text-ok inline-flex items-center gap-1.5"><Check size={14} /> connected to {conn.channel?.title} {conn.channel?.handle}</span>
-                        : <span className="text-warn inline-flex items-center gap-1.5"><AlertTriangle size={14} /> not connected ({conn.error || 'no token in youtube_auth'})</span>}
+            <div className="rounded-input border border-rule p-3 space-y-2">
+                {conn === null && <span className="text-sm text-muted">checking channels…</span>}
+                {conn && accounts.length === 0 && (
+                    <span className="text-sm text-warn inline-flex items-center gap-1.5"><AlertTriangle size={14} /> no channel connected ({conn.error || 'no token in youtube_auth'})</span>
+                )}
+                {accounts.length > 0 && (
+                    <div className="flex flex-wrap gap-2" role="tablist" aria-label="YouTube channels">
+                        {accounts.map((a) => {
+                            const on = a.account === acc;
+                            return (
+                                <button key={a.account} type="button" role="tab" aria-selected={on} onClick={() => setPicked(a.account)}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-input border text-sm ${on ? 'border-brass bg-paper3 text-ink' : 'border-rule2 text-ink2 hover:border-muted'}`}>
+                                    {a.error ? <AlertTriangle size={14} className="text-warn" /> : <Check size={14} className="text-ok" />}
+                                    <span>{a.title || a.account}</span>
+                                    {a.handle && <span className="text-xs text-muted">{a.handle}</span>}
+                                    {a.account === defaultAccount && <span className="badge-brass">default</span>}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+                {acc && (
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+                        {accounts.find((a) => a.account === acc)?.error && (
+                            <span className="text-warn">{accounts.find((a) => a.account === acc).error}</span>
+                        )}
+                        {acc !== defaultAccount && (
+                            <button type="button" onClick={() => s.set({ default_account: acc })} className="text-brass hover:underline">
+                                make this the default channel
+                            </button>
+                        )}
+                        <span>The settings below are for this channel. A project posts to the channel it was first scheduled on.</span>
+                    </div>
+                )}
             </div>
             <div className="grid grid-cols-2 gap-4">
                 <Field label="visibility" hint="when not scheduled">
-                    <Select value={d.privacy} onChange={(v) => s.set({ privacy: v })} options={[
+                    <Select value={val('privacy')} onChange={(v) => set({ privacy: v })} options={[
                         { value: 'private', label: 'private' }, { value: 'unlisted', label: 'unlisted' }, { value: 'public', label: 'public' },
                     ]} />
                 </Field>
                 <Field label="category">
-                    <Select value={d.category} onChange={(v) => s.set({ category: v })} options={[
+                    <Select value={val('category')} onChange={(v) => set({ category: v })} options={[
                         { value: '28', label: 'Science & Technology' }, { value: '27', label: 'Education' },
                         { value: '26', label: 'Howto & Style' }, { value: '22', label: 'People & Blogs' },
                         { value: '24', label: 'Entertainment' }, { value: '20', label: 'Gaming' },
+                        { value: '1', label: 'Film & Animation' }, { value: '23', label: 'Comedy' },
                     ]} />
                 </Field>
                 <Field label="post time">
-                    <input type="time" value={d.default_time} onChange={(e) => s.set({ default_time: e.target.value })} className="input-field [color-scheme:dark]" />
+                    <input type="time" value={val('default_time')} onChange={(e) => set({ default_time: e.target.value })} className="input-field [color-scheme:dark]" />
                 </Field>
                 <Field label="how often">
-                    <Select value={d.cadence} onChange={(v) => s.set({ cadence: v })} options={[
+                    <Select value={val('cadence')} onChange={(v) => set({ cadence: v })} options={[
                         { value: 'twice', label: '2 a day' }, { value: 'daily', label: '1 a day' },
                         { value: 'every2', label: 'every 2 days' }, { value: 'weekly', label: '1 a week' },
                     ]} />
                 </Field>
             </div>
             <Field label="timezone">
-                <input value={d.timezone} onChange={(e) => s.set({ timezone: e.target.value })} placeholder="Europe/Kyiv" className="input-field font-mono text-xs" />
+                <input value={val('timezone')} onChange={(e) => set({ timezone: e.target.value })} placeholder="Europe/Kyiv" className="input-field font-mono text-xs" />
             </Field>
             <Field label="description template" hint="{description} {title} {source_url}">
-                <textarea value={d.description_template} onChange={(e) => s.set({ description_template: e.target.value })} rows={5} className="input-field text-sm" />
+                <textarea value={val('description_template')} onChange={(e) => set({ description_template: e.target.value })} rows={5} className="input-field text-sm" />
             </Field>
             <p className="text-xs text-muted -mt-2">A line with {'{source_url}'} is left out when the project has no source link.</p>
             <Field label="tags" hint="comma separated, added to every upload">
-                <input value={d.tags} onChange={(e) => s.set({ tags: e.target.value })} placeholder="інвертор, електрика, автономність" className="input-field" />
+                <input value={val('tags')} onChange={(e) => set({ tags: e.target.value })} placeholder="tag one, tag two" className="input-field" />
             </Field>
             <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
         </div>

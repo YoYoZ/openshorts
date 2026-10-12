@@ -232,6 +232,21 @@ access; Google warns that the app is unverified (**Advanced → Go to …**), wh
 is expected for your own client. Restart AutoShortsCut: the schedule dialog
 now shows your channel.
 
+### More than one channel
+
+Run the same command for each extra channel with `--name` (sign in with that
+channel's account when the browser opens):
+
+```bash
+.venv/Scripts/python youtube_auth.py path/to/client_secret.json --name second-channel
+```
+
+It is saved as `youtube_auth/accounts/second-channel.json` next to the first
+channel's `token.json`. Settings → YouTube then has a tab per channel with its
+own description template, tags, category, post time and cadence, and picks
+the default channel; the schedule dialog asks which channel to post to, and a
+project keeps posting to the channel it was first scheduled on.
+
 ### Good to know
 
 - **Tokens expire after 7 days while the consent screen is in "Testing".**
