@@ -388,6 +388,18 @@ function App() {
   // stepping to another clip, so a pass over one step goes clip by clip.
   const [wsTab, setWsTab] = useState('clip');
   const openWorkspace = useCallback((index, tab = 'clip') => { setWsTab(tab); setFocusIdx(index); }, []);
+  // Done / not done for a clip (the workspace's Done button).
+  const toggleClipDone = async (index, done) => {
+    patchClip(index, { done });
+    try {
+      const res = await apiFetch(`/api/clip/${jobId}/${index}/done`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ done }),
+      });
+      if (!res.ok) patchClip(index, { done: !done });
+    } catch {
+      patchClip(index, { done: !done });
+    }
+  };
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scheduleSubset, setScheduleSubset] = useState(null);
   // Pre-publish checklist summaries per clip index ({ok, warn, fail, info}).
@@ -2554,6 +2566,13 @@ function App() {
                 })}
               </nav>
               <div className="flex gap-1.5 ml-auto sm:ml-0">
+                {/* Done for the whole clip, from any tab (same as O on the Clip tab). */}
+                <button type="button" onClick={() => toggleClipDone(focusIdx, !clip.done)} aria-pressed={!!clip.done}
+                  title={clip.done ? 'marked done: click to reopen' : 'mark this clip done'}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-input border text-xs transition-colors ${clip.done
+                    ? 'border-ok bg-ok/15 text-ok' : 'border-rule2 text-ink2 hover:border-ok/60 hover:text-ok'}`}>
+                  <Check size={14} /> {clip.done ? 'Done' : 'Mark done'}
+                </button>
                 <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs" title="previous clip (←)">
                   <ChevronLeft size={14} /> prev
                 </button>
