@@ -224,6 +224,9 @@ async function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
   });
   Menu.setApplicationMenu(null);
+  // Editing needs the room: open maximized (the size above is what
+  // un-maximizing returns to).
+  win.maximize();
   win.on('page-title-updated', (e) => e.preventDefault());
 
   // Closing kills the backend and every job under it: ask first, and cancel

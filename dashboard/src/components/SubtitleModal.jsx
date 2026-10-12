@@ -361,7 +361,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                 stays a collapsible box inside the settings). */}
             <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:flex-none md:w-auto' : 'max-h-[600px]'}`}>
+                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:flex-none md:w-auto md:max-w-[38%]' : 'max-h-[600px]'}`}>
                     {captionsLoading ? (
                         <div className="flex items-center gap-2 text-muted">
                             <Loader2 size={16} className="animate-spin" />
