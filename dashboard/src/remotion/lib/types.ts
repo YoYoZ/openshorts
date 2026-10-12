@@ -30,6 +30,11 @@ export interface SubtitleStyle {
   shadow?: number;
   // Text colour on the active-word box ("karaoke" animation).
   highlightTextColor?: string;
+  // Typography (subtitles.generate_ass bold / italic / letter_spacing).
+  bold?: boolean;
+  italic?: boolean;
+  // Extra space between letters, in composition px.
+  letterSpacing?: number;
 }
 
 export interface SubtitleConfig {

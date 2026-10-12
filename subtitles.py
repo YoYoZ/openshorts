@@ -302,6 +302,10 @@ AUTO_CAPTION_STYLE = {
     "uppercase": True,
     "max_chars": 16,
     "max_duration": 1.4,
+    "bold": True,
+    "italic": False,
+    "letter_spacing": 0.0,
+    "shadow": 0,
 }
 
 
@@ -370,6 +374,13 @@ _metrics_cache = {}
 def _find_font_file(font_name):
     """Path of a font file for ``font_name`` (bold face preferred), or None."""
     key = str(font_name or "").strip().lower()
+    try:
+        import font_catalog
+        found = font_catalog.find(font_name, bold=True)
+        if found:
+            return found
+    except Exception:
+        pass
     if key in _BUNDLED_FONTS:
         path = os.path.join(_FONTS_DIR, _BUNDLED_FONTS[key])
         if os.path.exists(path):
@@ -452,7 +463,7 @@ def text_width_units(text, font_name, fontsize):
 
 
 def fit_scale(words, font_name, fontsize, frame_aspect, uppercase=False,
-              grow=1.0, outline=0.0):
+              grow=1.0, outline=0.0, spacing=0.0):
     """Percent (<=100) to scale a caption block by so its widest word fits.
 
     Lines wrap on spaces, so only a single word can be wider than the frame.
@@ -464,7 +475,12 @@ def fit_scale(words, font_name, fontsize, frame_aspect, uppercase=False,
     widest = 0.0
     for w in words:
         text = w.upper() if uppercase else w
-        width = text_width_units(text, font_name, fontsize) * grow + 2 * outline
+        # Spacing is in horizontal script units (PlayResX 384 across the
+        # width), the widths here in vertical ones (PlayResY 288): measured,
+        # one unit is 2.8 px on a 1080-wide frame = aspect * 0.75 vertical units.
+        gap = max(0.0, float(spacing or 0)) * float(frame_aspect or 9 / 16) * 0.75
+        width = (text_width_units(text, font_name, fontsize)
+                 + gap * max(0, len(text) - 1)) * grow + 2 * outline
         widest = max(widest, width)
     if widest <= avail:
         return 100
@@ -540,7 +556,8 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
                  highlight_color="#FFD700", bg_color="#000000", bg_opacity=0.0,
                  effect="none", base_opacity=1.0, uppercase=False,
                  margin_v=SAFE_MARGIN_V, split_ranges=None,
-                 reveal=False, shadow=0, frame_aspect=None):
+                 reveal=False, shadow=0, frame_aspect=None,
+                 bold=True, italic=False, letter_spacing=0.0):
     """
     Generates a karaoke-style ASS file: each block is shown like the SRT path,
     but the currently spoken word is rendered in highlight_color (modern
@@ -595,6 +612,10 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         if not font_covers("Anton", all_text) and font_covers("Impact", all_text):
             safe_font = "Impact"
     base_opacity =_clamp_number(base_opacity, 0.05, 1.0, 1.0)
+    # ASS Bold/Italic are -1 (on) / 0; Spacing is extra space between letters
+    # in PlayRes units (the editor's letter spacing).
+    b_flag, i_flag = (-1 if bold else 0), (-1 if italic else 0)
+    spacing = round(_clamp_number(letter_spacing, -5, 20, 0), 2)
     # Dim inactive words via a fully-opaque scaled color (NOT alpha — see
     # _dim_hex_color); the active word overrides the color inline.
     primary_colour = hex_to_ass_color(_dim_hex_color(font_color, base_opacity), 1.0)
@@ -609,10 +630,9 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
     else:
         border_style = 1
         outline_colour = hex_to_ass_color(border_color, 1.0, fallback="000000")
-        # 0 is a real choice now (the shadow-only "clean" look); before the
-        # slider's "None" still drew a 1px outline. Without a shadow keep the
-        # old floor, or white text on a white wall disappears.
-        outline_width = int(border_width) if shadow else max(1, int(border_width))
+        # 0 means no outline: the editor's "none" is a choice, not a hint
+        # (a 1px floor here drew borders the user had switched off).
+        outline_width = int(border_width)
 
     back_colour = hex_to_ass_color("#000000", 0.55 if shadow else 0.0)
     highlight_inline = _hex_to_ass_inline_color(highlight_color, fallback="FFD700")
@@ -650,7 +670,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         active_style = (
             f"Style: Active,{safe_font},{final_fontsize},"
             f"{hex_to_ass_color(on_box, 1.0)},{hex_to_ass_color(on_box, 1.0)},"
-            f"{box_colour},{box_colour},1,0,0,0,100,100,0,0,3,{pad},0,"
+            f"{box_colour},{box_colour},{b_flag},{i_flag},0,0,100,100,{spacing},0,3,{pad},0,"
             f"{ass_alignment},{SAFE_MARGIN_H},{SAFE_MARGIN_H},{_margin_v_for(ass_alignment, margin_v)},1\n"
         )
 
@@ -667,7 +687,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{safe_font},{final_fontsize},{primary_colour},{primary_colour},"
-        f"{outline_colour},{back_colour},1,0,0,0,100,100,0,0,{border_style},"
+        f"{outline_colour},{back_colour},{b_flag},{i_flag},0,0,100,100,{spacing},0,{border_style},"
         f"{outline_width},{shadow},{ass_alignment},{SAFE_MARGIN_H},{SAFE_MARGIN_H},{_margin_v_for(ass_alignment, margin_v)},1\n"
         f"{active_style}"
         "\n"
@@ -681,7 +701,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
     pct = fit_scale([w['word'].strip() for b in blocks for w in b], safe_font,
                     final_fontsize, frame_aspect, uppercase,
                     grow=1.08 if effect == "pop" else 1.0,
-                    outline=outline_width)
+                    outline=outline_width, spacing=spacing)
     fit = f"\\fscx{pct}\\fscy{pct}" if pct < 100 else ""
     events = []
     for block in blocks:
@@ -786,7 +806,8 @@ def _sanitize_font_name(name):
 def subtitles_filter(srt_path, alignment=2, fontsize=16,
                      font_name="Verdana", font_color="#FFFFFF",
                      border_color="#000000", border_width=2,
-                     bg_color="#000000", bg_opacity=0.0):
+                     bg_color="#000000", bg_opacity=0.0,
+                     bold=True, italic=False, letter_spacing=0.0):
     """The -vf string burn_subtitles uses (also fed to hooks.add_hook_to_video)."""
     # Position mapping
     ass_alignment = 2
@@ -823,7 +844,7 @@ def subtitles_filter(srt_path, alignment=2, fontsize=16,
         # Outline mode: text border/outline
         border_style = 1
         outline_colour = hex_to_ass_color(border_color, 1.0, fallback="000000")
-        outline_width = max(1, int(border_width))
+        outline_width = int(border_width)
 
     back_colour = hex_to_ass_color("#000000", 0.0)
 
@@ -839,7 +860,8 @@ def subtitles_filter(srt_path, alignment=2, fontsize=16,
         f"Shadow=0,"
         f"MarginV={SAFE_MARGIN_BOTTOM if ass_alignment == 2 else SAFE_MARGIN_V},"
         f"MarginL={SAFE_MARGIN_H},MarginR={SAFE_MARGIN_H},"
-        f"Bold=1"
+        f"Bold={-1 if bold else 0},Italic={-1 if italic else 0},"
+        f"Spacing={round(_clamp_number(letter_spacing, -5, 20, 0), 2)}"
     )
 
     # Let libass see the fonts bundled with the app (e.g. Anton for Impact)
@@ -865,7 +887,8 @@ def subtitles_filter(srt_path, alignment=2, fontsize=16,
 def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
                    font_name="Verdana", font_color="#FFFFFF",
                    border_color="#000000", border_width=2,
-                   bg_color="#000000", bg_opacity=0.0):
+                   bg_color="#000000", bg_opacity=0.0,
+                   bold=True, italic=False, letter_spacing=0.0):
     """
     Burns subtitles into the video using FFmpeg.
     Supports two modes:
@@ -875,7 +898,8 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
     vf = subtitles_filter(srt_path, alignment=alignment, fontsize=fontsize,
                           font_name=font_name, font_color=font_color,
                           border_color=border_color, border_width=border_width,
-                          bg_color=bg_color, bg_opacity=bg_opacity)
+                          bg_color=bg_color, bg_opacity=bg_opacity,
+                          bold=bold, italic=italic, letter_spacing=letter_spacing)
 
     cmd = [
         'ffmpeg', '-y',

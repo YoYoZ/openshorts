@@ -69,6 +69,7 @@ DEFAULTS = {
         "font_size": 44, "font_color": "#FFFFFF", "highlight_color": "#FFE500",
         "border_color": "#000000", "border_width": 4, "effect": "pop",
         "base_opacity": 1.0, "uppercase": True, "max_chars": 16, "max_duration": 1.4,
+        "bold": True, "italic": False, "letter_spacing": 0.0, "shadow": 0,
     },
     "hook_defaults": {"style": "pill", "font": "montserrat", "scale": 1.0,
                       "position": "auto", "duration_seconds": 5},

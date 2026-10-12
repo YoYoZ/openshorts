@@ -65,5 +65,6 @@ export const SUBTITLE_FONTS: Record<string, string> = {
 };
 
 export function getFontStack(fontFamily: string): string {
-  return SUBTITLE_FONTS[fontFamily] ?? fontFamily;
+  // Any installed font: quoted, so names with spaces or digits work too.
+  return SUBTITLE_FONTS[fontFamily] ?? `"${fontFamily.replace(/"/g, '')}", sans-serif`;
 }

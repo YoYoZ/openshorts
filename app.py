@@ -1030,7 +1030,7 @@ CAPTION_STYLE_FIELDS = (
     "style", "position", "font_size", "font_name", "font_color",
     "border_color", "border_width", "bg_color", "bg_opacity",
     "highlight_color", "effect", "base_opacity", "uppercase", "reveal",
-    "shadow", "max_chars", "max_duration")
+    "shadow", "max_chars", "max_duration", "bold", "italic", "letter_spacing")
 
 
 def _words_transcript(words, language="en"):
@@ -1069,6 +1069,7 @@ def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
             bg_opacity=s["bg_opacity"], effect=s["effect"],
             base_opacity=s["base_opacity"], uppercase=s["uppercase"],
             reveal=s["reveal"], shadow=s["shadow"],
+            bold=s["bold"], italic=s["italic"], letter_spacing=s["letter_spacing"],
             frame_aspect=frame_aspect_of(video_path))
         if max_chars is not None:
             opts["max_chars"] = max_chars
@@ -1084,7 +1085,8 @@ def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
                    alignment=s["position"], fontsize=s["font_size"],
                    font_name=s["font_name"], font_color=s["font_color"],
                    border_color=s["border_color"], border_width=s["border_width"],
-                   bg_color=s["bg_color"], bg_opacity=s["bg_opacity"])
+                   bg_color=s["bg_color"], bg_opacity=s["bg_opacity"],
+                   bold=s["bold"], italic=s["italic"], letter_spacing=s["letter_spacing"])
     return True
 
 
@@ -2575,6 +2577,15 @@ async def lifespan(app: FastAPI):
     _install_drain_signal_handler()
     asyncio.create_task(_handover_watch())
     asyncio.create_task(_resume_scan())
+    # Scan the installed fonts in the background so the caption editor's font
+    # list is ready when it is first opened (cached on disk after that).
+    def _warm_fonts():
+        try:
+            import font_catalog
+            font_catalog.catalog()
+        except Exception:
+            pass
+    asyncio.get_event_loop().run_in_executor(None, _warm_fonts)
     # Start worker and cleanup
     worker_task = asyncio.create_task(process_queue())
     cleanup_task = asyncio.create_task(cleanup_jobs())
@@ -3831,6 +3842,14 @@ async def test_provider(req: ProviderTest):
         return {"ok": False, "error": str(e)[:200]}
 
 
+@app.get("/api/fonts")
+async def installed_fonts():
+    """Font families installed on this computer, for the caption font picker
+    (font_catalog.py). libass finds any of them by name when burning."""
+    import font_catalog
+    return await asyncio.to_thread(font_catalog.families)
+
+
 @app.get("/api/settings/verify-stats")
 async def verify_stats():
     """How often each simple-task model agreed with the hard-task model on
@@ -4985,6 +5004,9 @@ class SubtitleRequest(BaseModel):
     uppercase: bool = False
     reveal: bool = False  # karaoke: words appear as they are spoken
     shadow: int = 0  # karaoke: drop shadow depth, 0-6
+    bold: bool = True
+    italic: bool = False
+    letter_spacing: float = 0.0  # extra space between letters (ASS units, -5..20)
     # Words per line, as a character budget (1 = one word at a time). None
     # keeps the generator's defaults, which is what old clients send.
     max_chars: Optional[int] = None

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import FolderSettings from './FolderSettings';
+import { FontPicker, ColorField, SliderField, ToggleChip } from './TypographyControls';
 
 // AutoShortsCut settings (/api/settings, settings_store.py): every section is
 // edited as a draft and saved on its own. Keys come back masked; typing a new
@@ -391,9 +392,7 @@ function SubtitlesSection({ settings, onSaved }) {
             <p className="text-sm text-muted">The look new projects&apos; captions get, and what the subtitle editor starts from.</p>
             <div className="grid grid-cols-2 gap-4">
                 <Field label="font">
-                    <Select value={d.font_name} onChange={(v) => s.set({ font_name: v })} options={[
-                        'Montserrat ExtraBold', 'Anton', 'Impact', 'Verdana', 'Arial',
-                    ].map((f) => ({ value: f, label: f }))} />
+                    <FontPicker value={d.font_name} onChange={(v) => s.set({ font_name: v })} />
                 </Field>
                 <Field label="animation">
                     <Select value={d.effect} onChange={(v) => s.set({ effect: v })} options={[
@@ -414,18 +413,25 @@ function SubtitlesSection({ settings, onSaved }) {
                 <input type="range" min={4} max={20} step={0.5} value={sizeToPct(d.font_size || 44)}
                     onChange={(e) => s.set({ font_size: pctToSize(Number(e.target.value)) })} className="w-full accent-[color:var(--color-accent)]" />
             </Field>
-            <div className="grid grid-cols-3 gap-4">
-                {[['font_color', 'text'], ['highlight_color', 'active word'], ['border_color', 'outline']].map(([k, label]) => (
-                    <Field key={k} label={label}>
-                        <input type="color" value={d[k] || '#ffffff'} onChange={(e) => s.set({ [k]: e.target.value })} className="w-full h-9 rounded-input bg-transparent cursor-pointer" />
-                    </Field>
-                ))}
+            <div className="flex items-center gap-2">
+                <ToggleChip on={d.bold !== false} onClick={() => s.set({ bold: d.bold === false })} title="bold"><b>B</b></ToggleChip>
+                <ToggleChip on={!!d.italic} onClick={() => s.set({ italic: !d.italic })} title="italic"><i>I</i></ToggleChip>
+                <ToggleChip on={!!d.uppercase} onClick={() => s.set({ uppercase: !d.uppercase })} title="capital letters">AA</ToggleChip>
             </div>
-            <Field label="outline thickness" hint={String(d.border_width)}>
-                <input type="range" min={0} max={10} step={1} value={d.border_width ?? 4}
-                    onChange={(e) => s.set({ border_width: Number(e.target.value) })} className="w-full accent-[color:var(--color-accent)]" />
-            </Field>
-            <Toggle checked={!!d.uppercase} onChange={(v) => s.set({ uppercase: v })} label="uppercase" />
+            <SliderField label="letter spacing" value={d.letter_spacing ?? 0} onChange={(v) => s.set({ letter_spacing: v })}
+                min={-2} max={12} step={0.5} format={(v) => (v === 0 ? 'normal' : `${v > 0 ? '+' : ''}${v}`)} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <ColorField label="text" value={d.font_color || '#FFFFFF'} onChange={(v) => s.set({ font_color: v })}
+                    presets={['#FFFFFF', '#FFE500', '#000000']} />
+                <ColorField label="active word" value={d.highlight_color || '#FFE500'} onChange={(v) => s.set({ highlight_color: v })}
+                    presets={['#FFE500', '#A3FF12', '#00BBFF', '#FF4444']} />
+                <ColorField label="outline" value={d.border_color || '#000000'} onChange={(v) => s.set({ border_color: v })}
+                    presets={['#000000', '#FFFFFF']} />
+            </div>
+            <SliderField label="outline width" value={d.border_width ?? 4} onChange={(v) => s.set({ border_width: v })}
+                min={0} max={10} format={(v) => (v === 0 ? 'none' : v)} />
+            <SliderField label="shadow" value={d.shadow ?? 0} onChange={(v) => s.set({ shadow: v })}
+                min={0} max={6} format={(v) => (v === 0 ? 'none' : v)} />
             <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
         </div>
     );

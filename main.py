@@ -1280,6 +1280,8 @@ def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=
                 border_color=style["border_color"], border_width=style["border_width"],
                 highlight_color=style["highlight_color"], effect=style["effect"],
                 base_opacity=style["base_opacity"], uppercase=style["uppercase"],
+                shadow=style.get("shadow", 0), bold=style.get("bold", True),
+                italic=style.get("italic", False), letter_spacing=style.get("letter_spacing", 0.0),
                 frame_aspect=_subs.frame_aspect_of(clip_path)):
             print("   ℹ️ No words in range — clip ships without captions.")
             return None

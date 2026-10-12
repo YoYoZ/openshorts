@@ -834,6 +834,9 @@ function App() {
             uppercase: options.uppercase || false,
             reveal: options.reveal || false,
             shadow: options.shadow || 0,
+            bold: options.bold ?? true,
+            italic: !!options.italic,
+            letter_spacing: options.letterSpacing || 0,
             max_chars: options.maxChars ?? null,
             max_duration: options.maxDuration ?? null,
             // Chain from the clip's current server file (its video_url basename).

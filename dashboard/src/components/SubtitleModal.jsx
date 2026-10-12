@@ -10,6 +10,7 @@ function RemotionPreview(props) {
 }
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
+import { FontPicker, ColorField, SliderField, ToggleChip } from './TypographyControls';
 
 const FONT_OPTIONS = [
     { value: 'Anton', label: 'Anton' },
@@ -120,10 +121,6 @@ const luminance = (hex) => {
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 };
 
-const swatchClass = (selected) =>
-    `w-6 h-6 rounded-full transition-all ${selected
-        ? 'ring-2 ring-[color:var(--color-accent)] ring-offset-2 ring-offset-[color:var(--color-paper-2)]'
-        : 'ring-1 ring-[color:var(--color-rule-2)] hover:ring-[color:var(--color-accent)]'}`;
 
 export default function SubtitleModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
     // Opens on the look the clip already has (the Default preset), so
@@ -147,6 +144,9 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     const [uppercase, setUppercase] = useState(true);
     const [reveal, setReveal] = useState(false);
     const [shadow, setShadow] = useState(0);
+    const [bold, setBold] = useState(true);
+    const [italic, setItalic] = useState(false);
+    const [letterSpacing, setLetterSpacing] = useState(0);   // ASS units (subtitles.generate_ass)
     const [oneWord, setOneWord] = useState(false);
     const [activePreset, setActivePreset] = useState('default');
 
@@ -168,6 +168,9 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
         setBgOpacity(0);
         setReveal(!!p.reveal);
         setShadow(p.shadow || 0);
+        setBold(p.bold ?? true);
+        setItalic(!!p.italic);
+        setLetterSpacing(p.letterSpacing || 0);
         setOneWord(!!p.oneWord);
         if (p.fontSize) setFontSize(p.fontSize);
         setAnimationState(p.style === 'karaoke' ? (EFFECT_TO_ANIMATION[p.effect] || 'none') : 'none');
@@ -192,6 +195,9 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
         if (s.uppercase != null) setUppercase(!!s.uppercase);
         if (s.reveal != null) setReveal(!!s.reveal);
         if (s.shadow != null) setShadow(s.shadow);
+        if (s.bold != null) setBold(!!s.bold);
+        if (s.italic != null) setItalic(!!s.italic);
+        if (s.letter_spacing != null) setLetterSpacing(Number(s.letter_spacing) || 0);
         setOneWord(s.max_chars === 1);
         setAnimationState(s.style === 'karaoke' ? (EFFECT_TO_ANIMATION[s.effect] || 'none') : 'none');
     };
@@ -204,6 +210,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     const [captions, setCaptions] = useState([]);
     const [originalCaptions, setOriginalCaptions] = useState([]);
     const [editableText, setEditableText] = useState('');
+    // Cyrillic captions: the font picker offers fonts that can write them first.
+    const needsCyrillic = /[Ѐ-ӿ]/.test(editableText || '');
     const [durationSec, setDurationSec] = useState(30);
     const [captionsLoading, setCaptionsLoading] = useState(false);
     const [useRemotionPreview, setUseRemotionPreview] = useState(false);
@@ -217,6 +225,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
         highlight_color: highlightColor, border_color: borderColor, border_width: borderWidth,
         bg_color: bgColor, bg_opacity: bgOpacity, style, effect, base_opacity: baseOpacity,
         uppercase, reveal, shadow, max_chars: oneWord ? 1 : null,
+        bold, italic, letter_spacing: letterSpacing,
     });
     const clearDraft = () => { try { localStorage.removeItem(draftKey); } catch { /* storage off */ } };
 
@@ -307,6 +316,11 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
             shadow: style === 'karaoke' ? shadow : 0,
             // Text on the active-word box: black on a light box, as burned.
             highlightTextColor: luminance(highlightColor) > 0.6 ? '#000000' : fontColor,
+            bold,
+            italic,
+            // One libass spacing unit is 2.8 px of a 1080-wide frame (measured);
+            // the preview composition is drawn at 3.85 px per 6.67 output px.
+            letterSpacing: letterSpacing * 2.8125 * (PREVIEW_PX_PER_UNIT / (1920 / 288)),
         },
     };
 
@@ -341,9 +355,11 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
 
     return (
         <Modal inline={inline} isOpen={isOpen} onClose={onClose} size="xl" eyebrow="EDITOR · SUBTITLES" title="subtitles">
-            <div className="flex flex-col md:flex-row gap-6">
+            {/* As a workspace tab the editor uses the full height: the preview
+                as tall as fits, the settings scrolling in their own column. */}
+            <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className="flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] max-h-[600px]">
+                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:aspect-auto md:h-full md:min-h-0' : 'max-h-[600px]'}`}>
                     {captionsLoading ? (
                         <div className="flex items-center gap-2 text-muted">
                             <Loader2 size={16} className="animate-spin" />
@@ -373,7 +389,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                 </div>
 
                 {/* Right: Controls */}
-                <div className="w-full md:w-80 flex flex-col">
+                <div className={`w-full flex flex-col ${inline ? 'md:w-96 md:h-full md:min-h-0' : 'md:w-80'}`}>
                     <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
                         {/* Caption presets (server-side karaoke burn) */}
                         <div>
@@ -508,79 +524,32 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                             </div>
                         )}
 
-                        {/* Font Family */}
-                        <div>
-                            <p className="eyebrow mb-2">Font</p>
-                            <select
-                                value={fontName}
-                                onChange={(e) => setFontName(e.target.value)}
-                                className="input-field"
-                            >
-                                {FONT_OPTIONS.map((f) => (
-                                    <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
-                                ))}
-                            </select>
+                        {/* Typography: any installed font, real colour pickers, sliders. */}
+                        <div className="space-y-3">
+                            <p className="eyebrow">Font</p>
+                            <FontPicker value={fontName} onChange={setFontName} needsCyrillic={needsCyrillic} />
+                            <div className="flex items-center gap-2">
+                                <ToggleChip on={bold} onClick={() => setBold((v) => !v)} title="bold"><b>B</b></ToggleChip>
+                                <ToggleChip on={italic} onClick={() => setItalic((v) => !v)} title="italic"><i>I</i></ToggleChip>
+                                <ToggleChip on={uppercase} onClick={() => setUppercase((v) => !v)} title="capital letters">AA</ToggleChip>
+                            </div>
+                            <SliderField label="Letter spacing" value={letterSpacing} onChange={setLetterSpacing}
+                                min={-2} max={12} step={0.5} format={(v) => (v === 0 ? 'normal' : `${v > 0 ? '+' : ''}${v}`)} />
                         </div>
 
-                        {/* Text Color */}
-                        <div>
-                            <p className="eyebrow mb-2">Text color</p>
-                            <div className="flex flex-wrap items-center gap-2.5">
-                                {COLOR_PRESETS.map((c) => (
-                                    <button
-                                        key={c.color}
-                                        onClick={() => setFontColor(c.color)}
-                                        className={swatchClass(fontColor === c.color)}
-                                        style={{ backgroundColor: c.color }}
-                                        title={c.label}
-                                    />
-                                ))}
-                                <label className="w-6 h-6 rounded-full border border-dashed border-rule2 cursor-pointer flex items-center justify-center hover:border-brass transition-colors overflow-hidden relative" title="Custom color">
-                                    <span className="text-xs text-muted leading-none">+</span>
-                                    <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                </label>
-                            </div>
-                        </div>
+                        <ColorField label="Text color" value={fontColor} onChange={setFontColor}
+                            presets={COLOR_PRESETS.map((c) => c.color)} />
 
-                        {/* Highlight Color (new) */}
-                        <div>
-                            <p className="eyebrow mb-2">Highlight</p>
-                            <div className="flex flex-wrap items-center gap-2.5">
-                                {HIGHLIGHT_PRESETS.map((c) => (
-                                    <button
-                                        key={c.color}
-                                        onClick={() => setHighlightColor(c.color)}
-                                        className={swatchClass(highlightColor === c.color)}
-                                        style={{ backgroundColor: c.color }}
-                                        title={c.label}
-                                    />
-                                ))}
-                            </div>
-                        </div>
+                        <ColorField label="Highlight (spoken word)" value={highlightColor} onChange={setHighlightColor}
+                            presets={HIGHLIGHT_PRESETS.map((c) => c.color)} />
 
-                        {/* Border / Outline */}
-                        <div>
-                            <p className="eyebrow mb-2">Border</p>
-                            <div className="flex items-center gap-3">
-                                <label className="relative w-8 h-8 rounded-input border border-rule2 cursor-pointer overflow-hidden shrink-0" title="Border color">
-                                    <div className="w-full h-full" style={{ backgroundColor: borderColor }} />
-                                    <input type="color" value={borderColor} onChange={(e) => setBorderColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                </label>
-                                <div className="flex-1">
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="5"
-                                        value={borderWidth}
-                                        onChange={(e) => setBorderWidth(parseInt(e.target.value))}
-                                        className="w-full accent-[var(--color-accent)]"
-                                    />
-                                    <div className="flex justify-between">
-                                        <span className="readout">None</span>
-                                        <span className="readout">Thick</span>
-                                    </div>
-                                </div>
-                            </div>
+                        <div className="space-y-3">
+                            <ColorField label="Outline" value={borderColor} onChange={setBorderColor}
+                                presets={['#000000', '#FFFFFF', '#1A1A1A']} />
+                            <SliderField label="Outline width" value={borderWidth} onChange={setBorderWidth}
+                                min={0} max={10} step={1} format={(v) => (v === 0 ? 'none' : v)} />
+                            <SliderField label="Shadow" value={shadow} onChange={setShadow}
+                                min={0} max={6} step={1} format={(v) => (v === 0 ? 'none' : v)} />
                         </div>
 
                         {/* Background Box */}
@@ -631,6 +600,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                 // Karaoke burn (server-side ASS render)
                                 style, effect, baseOpacity, uppercase, highlightColor,
                                 reveal: !oneWord && reveal, shadow, maxChars, maxDuration,
+                                bold, italic, letterSpacing,
                                 // Remotion data
                                 remotion: useRemotionPreview ? subtitleConfig : null,
                                 captions: textEdited ? captions : null,

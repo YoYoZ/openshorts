@@ -75,12 +75,13 @@ interface SubtitleBlockProps {
 // so only a single word can overflow.
 const FIT_WIDTH_SHARE = 0.76;
 let measureCtx: CanvasRenderingContext2D | null = null;
-const measureWord = (text: string, fontStack: string, fontSize: number): number => {
+const measureWord = (text: string, fontStack: string, fontSize: number,
+  weight = 700, italic = false, spacing = 0): number => {
   if (typeof document === "undefined") return 0;
   if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
   if (!measureCtx) return 0;
-  measureCtx.font = `700 ${fontSize}px ${fontStack}`;
-  return measureCtx.measureText(text).width;
+  measureCtx.font = `${italic ? "italic " : ""}${weight} ${fontSize}px ${fontStack}`;
+  return measureCtx.measureText(text).width + Math.max(0, spacing) * Math.max(0, text.length - 1);
 };
 
 const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
@@ -104,9 +105,11 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
   const widest = React.useMemo(() => Math.max(
     0,
     ...config.captions.map((w) =>
-      measureWord(style.uppercase ? w.text.toUpperCase() : w.text, fontStack, style.fontSize) * grow
+      measureWord(style.uppercase ? w.text.toUpperCase() : w.text, fontStack, style.fontSize,
+        style.bold === false ? 400 : 700, !!style.italic, style.letterSpacing || 0) * grow
         + 2 * (style.borderWidth || 0))
-  ), [config.captions, style.uppercase, fontStack, style.fontSize, grow, style.borderWidth]);
+  ), [config.captions, style.uppercase, fontStack, style.fontSize, grow, style.borderWidth,
+      style.bold, style.italic, style.letterSpacing]);
   const avail = frameWidth * FIT_WIDTH_SHARE;
   const fit = widest > avail ? Math.max(0.35, avail / widest) : 1;
   const fitted = fit < 1 ? { ...style, fontSize: style.fontSize * fit } : style;
@@ -146,7 +149,9 @@ const SubtitleBlock: React.FC<SubtitleBlockProps> = ({
           direction: block.words.some((w) => RTL_CHARS.test(w.text)) ? "rtl" : "ltr",
           fontFamily: fontStack,
           fontSize: fitted.fontSize,
-          fontWeight: 700,
+          fontWeight: style.bold === false ? 400 : 700,
+          fontStyle: style.italic ? "italic" : "normal",
+          letterSpacing: style.letterSpacing ? `${style.letterSpacing}px` : undefined,
           maxWidth: "92%",
           ...bgStyle,
         }}
@@ -282,7 +287,9 @@ const WordSpan: React.FC<WordSpanProps> = ({
       style={{
         fontFamily: fontStack,
         fontSize: style.fontSize,
-        fontWeight: 700,
+        fontWeight: style.bold === false ? 400 : 700,
+        fontStyle: style.italic ? "italic" : "normal",
+        letterSpacing: style.letterSpacing ? `${style.letterSpacing}px` : undefined,
         color: animation === "karaoke" && isActive ? undefined : color,
         textShadow:
           [outline, dropShadow, animation !== "karaoke" ? extraStyle.textShadow : ""]
