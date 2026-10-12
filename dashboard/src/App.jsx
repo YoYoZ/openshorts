@@ -384,6 +384,10 @@ function App() {
   const [selectedIdx, setSelectedIdx] = useState(() => new Set());
   const [focusIdx, setFocusIdx] = useState(null);       // original clip index in the workspace
   const [focusCmd, setFocusCmd] = useState(null);       // { name, n } keyboard command
+  // Workspace tab: clip | trim | frame | subs | hook | check. Kept when
+  // stepping to another clip, so a pass over one step goes clip by clip.
+  const [wsTab, setWsTab] = useState('clip');
+  const openWorkspace = useCallback((index, tab = 'clip') => { setWsTab(tab); setFocusIdx(index); }, []);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scheduleSubset, setScheduleSubset] = useState(null);
   // Pre-publish checklist summaries per clip index ({ok, warn, fail, info}).
@@ -506,8 +510,8 @@ function App() {
     if (focusIdx === null) return undefined;
     const keys = {
       ' ': 'play', k: 'play', j: 'back', l: 'fwd', o: 'ok', s: 'safe', h: 'before',
-      1: 'edit', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'check',
     };
+    const tabKeys = { 1: 'trim', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'check' };
     const onKey = (e) => {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -515,7 +519,13 @@ function App() {
       // An editor or modal opened from the workspace owns the keyboard.
       if (editingClip !== null || reframingClip !== null || document.querySelector('[role="dialog"]')) return;
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-      if (key === 'Escape') { setFocusIdx(null); return; }
+      if (tabKeys[key]) { e.preventDefault(); setWsTab(tabKeys[key]); return; }
+      // In an editor tab the editor owns the other keys (space, S, I, O…).
+      if (wsTab !== 'clip' && wsTab !== 'check') {
+        if (key === 'Escape') setWsTab('clip');
+        return;
+      }
+      if (key === 'Escape') { if (wsTab !== 'clip') setWsTab('clip'); else setFocusIdx(null); return; }
       if (key === 'ArrowLeft') { e.preventDefault(); stepFocus(-1); return; }
       if (key === 'ArrowRight') { e.preventDefault(); stepFocus(1); return; }
       const name = keys[key];
@@ -2384,7 +2394,8 @@ function App() {
                           index={activeIdx}
                           stacked
                           selected={selectedIdx.has(activeIdx)}
-                          onOpenFocus={status === 'complete' ? (idx) => setFocusIdx(idx) : null}
+                          onOpenFocus={status === 'complete' ? (idx) => openWorkspace(idx) : null}
+                          onOpenTab={status === 'complete' ? openWorkspace : null}
                           jobId={jobId}
                           onClipPatch={patchClip}
                           checks={clipChecks[activeIdx] || null}
@@ -2412,7 +2423,7 @@ function App() {
                           bulkHookProgress={bulkHook}
                         />
                         {status === 'complete' && (
-                          <button type="button" onClick={() => setFocusIdx(activeIdx)}
+                          <button type="button" onClick={() => openWorkspace(activeIdx)}
                             className="btn-ghost w-full mt-3 py-2 text-xs">
                             Open in workspace · keyboard shortcuts
                           </button>
@@ -2497,90 +2508,116 @@ function App() {
         checks={clipChecks}
       />
 
-      {/* Clip workspace: one clip, big preview, keyboard driven. Sits under the
-          editors (ReframeEditor is z-50) so they open on top of it. */}
+      {/* Clip workspace: one clip, one tab bar. Clip shows the preview and
+          details; Trim and Framing fill the area below the tabs; Subtitles
+          and Hook bring their own live preview; Check sits beside the clip.
+          Every editor that used to be a popup lives here as a tab. */}
       {focusIdx !== null && results?.clips?.[focusIdx] && (() => {
         const pos = visibleClips.findIndex(({ index }) => index === focusIdx);
         const clip = results.clips[focusIdx];
+        const chk = clipChecks[focusIdx];
+        const tabs = [
+          ['clip', 'Clip', null, false, false],
+          ['trim', 'Trim', '1', !!clip.recipe, false],
+          ['frame', 'Framing', '2', !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length)), false],
+          ['subs', 'Subtitles', '3', !!(clip.caption_style || clip.caption_words), false],
+          ['hook', 'Hook', '4', !!clip.auto_hook?.text, false],
+          ['check', 'Check', '5', !!chk && !chk.fail && !chk.warn, !!(chk?.fail || chk?.warn)],
+        ];
+        const backToClip = () => setWsTab('clip');
         return (
-          <div className="fixed inset-0 z-40 bg-paper/95 backdrop-blur-sm flex flex-col animate-fade">
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-rule shrink-0">
-              <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs">
+          <div className="fixed inset-0 z-40 bg-paper flex flex-col animate-fade">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 sm:px-4 py-2.5 border-b border-rule shrink-0">
+              <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs" title="back to the clip list (Esc)">
                 <X size={14} /> close
               </button>
-              <span className="readout text-xs text-muted">
+              <span className="readout text-xs text-muted hidden sm:inline">
                 clip #{focusIdx + 1}{pos >= 0 ? ` · ${pos + 1} of ${visibleClips.length}` : ''} · {clipStatus(clip).replace('todo', 'to edit')}
               </span>
-              <div className="flex gap-1.5 ml-auto">
-                <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs">
+              <nav role="tablist" aria-label="Clip editing" className="flex items-center gap-1 overflow-x-auto order-last sm:order-none w-full sm:w-auto sm:mx-auto">
+                {tabs.map(([id, label, key, isDone, warn]) => {
+                  const on = wsTab === id;
+                  return (
+                    <button key={id} type="button" role="tab" aria-selected={on} onClick={() => setWsTab(id)}
+                      className={`flex items-center gap-2 h-9 px-3 rounded-input text-sm shrink-0 transition-colors ${on ? 'bg-paper3 text-ink' : 'text-muted hover:text-ink2 hover:bg-paper3/50'}`}>
+                      {key && (
+                        <span className={`w-5 h-5 rounded-md flex items-center justify-center font-mono text-[11px] ${isDone ? 'bg-ok/15 text-ok' : warn ? 'bg-warn/15 text-warn' : 'bg-paper3 text-muted'}`}>
+                          {isDone ? '✓' : warn ? '!' : key}
+                        </span>
+                      )}
+                      {label}
+                    </button>
+                  );
+                })}
+              </nav>
+              <div className="flex gap-1.5 ml-auto sm:ml-0">
+                <button type="button" onClick={() => stepFocus(-1)} disabled={pos <= 0} className="btn-ghost px-2.5 py-1.5 text-xs" title="previous clip (←)">
                   <ChevronLeft size={14} /> prev
                 </button>
-                <button type="button" onClick={() => stepFocus(1)} disabled={pos < 0 || pos >= visibleClips.length - 1} className="btn-ghost px-2.5 py-1.5 text-xs">
+                <button type="button" onClick={() => stepFocus(1)} disabled={pos < 0 || pos >= visibleClips.length - 1} className="btn-ghost px-2.5 py-1.5 text-xs" title="next clip (→)">
                   next <ChevronRight size={14} />
                 </button>
               </div>
             </div>
-            <div className="flex-1 min-h-0 flex flex-col md:flex-row">
-              {/* Steps rail: drives the same editors as the keys 1–5. */}
-              <nav aria-label="Editing steps" className="md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-rule p-2 md:p-3 flex md:flex-col gap-1 overflow-x-auto">
-                {[
-                  ['edit', 'Trim', '1', !!clip.recipe],
-                  ['frame', 'Framing', '2', !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length))],
-                  ['subs', 'Subtitles', '3', !!(clip.caption_style || clip.caption_words)],
-                  ['hook', 'Hook', '4', !!clip.auto_hook?.text],
-                  ['check', 'Check', '5', !!clipChecks[focusIdx] && !clipChecks[focusIdx].fail && !clipChecks[focusIdx].warn],
-                ].map(([name, label, key, isDone]) => {
-                  const warn = name === 'check' && (clipChecks[focusIdx]?.fail || clipChecks[focusIdx]?.warn);
-                  return (
-                    <button key={name} type="button" onClick={() => setFocusCmd((prev) => ({ name, n: (prev?.n || 0) + 1 }))}
-                      className="flex items-center gap-2.5 h-10 px-2.5 rounded-input text-sm text-ink2 hover:bg-paper3 hover:text-ink shrink-0 md:w-full">
-                      <span className={`w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs ${isDone ? 'bg-ok/15 text-ok' : warn ? 'bg-warn/15 text-warn' : 'bg-paper3 text-muted'}`}>
-                        {isDone ? '✓' : warn ? '!' : key}
-                      </span>
-                      <span className="flex-1 text-left">{label}</span>
-                      <span className="hidden md:inline font-mono text-[11px] text-muted">{key}</span>
-                    </button>
-                  );
-                })}
-                <div className="hidden md:flex flex-col gap-1.5 mt-auto pt-3 border-t border-rule text-[11px] text-muted leading-snug">
-                  <span>Space play · J / L ±2 s</span>
-                  <span>← / → clip · O done</span>
-                  <span>S safe zone · H before/after</span>
-                  <span>Esc close</span>
-                </div>
-              </nav>
-              <div className="flex-1 min-w-0 overflow-y-auto p-3 sm:p-6">
-              <div className="max-w-6xl mx-auto md:h-full">
-                <ResultCard
-                  hideSteps
-                  onSchedule={scheduleOne}
-                  key={`focus-${jobId}-${focusIdx}-${clip.video_url || ''}`}
-                  clip={clip}
-                  index={focusIdx}
+            <div className="flex-1 min-h-0">
+              {wsTab === 'trim' ? (
+                <ClipEditor
+                  key={`ws-trim-${focusIdx}`}
+                  inline
                   jobId={jobId}
-                  focus
-                  command={focusCmd}
-                  onClipPatch={patchClip}
-                  checks={clipChecks[focusIdx] || null}
-                  onChecks={onChecks}
-                  onEditClip={(index) => setEditingClip(index)}
-                  onReframeClip={(index) => setReframingClip(index)}
-                  durable={durableClips[focusIdx]}
-                  uploadPostKey={uploadPostKey}
-                  uploadUserId={uploadUserId}
-                  geminiApiKey={apiKey}
-                  elevenLabsKey={elevenLabsKey}
-                  isManaged={isManaged}
-                  onPlay={(time) => handleClipPlay(time)}
-                  onPause={handleClipPause}
-                  onBulkSubtitle={handleBulkSubtitles}
-                  clipCount={results.clips.length}
-                  bulkProgress={bulkSub}
-                  onBulkHook={handleBulkHooks}
-                  bulkHookProgress={bulkHook}
+                  clipIndex={focusIdx}
+                  clipTitle={clip.video_title_for_youtube_short || ''}
+                  onClose={backToClip}
+                  onRerendered={handleClipRerendered}
                 />
-              </div>
-              </div>
+              ) : wsTab === 'frame' ? (
+                <div className="h-full p-3 sm:p-6">
+                  <ReframeEditor
+                    key={`ws-frame-${focusIdx}`}
+                    inline
+                    jobId={jobId}
+                    clipIndex={focusIdx}
+                    clipTitle={clip.video_title_for_youtube_short || ''}
+                    onClose={backToClip}
+                    onReframed={handleClipRerendered}
+                  />
+                </div>
+              ) : (
+                <div className="h-full overflow-y-auto p-3 sm:p-6">
+                  <div className="max-w-6xl mx-auto md:h-full">
+                    <ResultCard
+                      hideSteps
+                      panel={wsTab === 'subs' || wsTab === 'hook' || wsTab === 'check' ? wsTab : null}
+                      onPanelClose={backToClip}
+                      onSchedule={scheduleOne}
+                      key={`focus-${jobId}-${focusIdx}-${clip.video_url || ''}`}
+                      clip={clip}
+                      index={focusIdx}
+                      jobId={jobId}
+                      focus
+                      command={focusCmd}
+                      onClipPatch={patchClip}
+                      checks={chk || null}
+                      onChecks={onChecks}
+                      onEditClip={() => setWsTab('trim')}
+                      onReframeClip={() => setWsTab('frame')}
+                      durable={durableClips[focusIdx]}
+                      uploadPostKey={uploadPostKey}
+                      uploadUserId={uploadUserId}
+                      geminiApiKey={apiKey}
+                      elevenLabsKey={elevenLabsKey}
+                      isManaged={isManaged}
+                      onPlay={(time) => handleClipPlay(time)}
+                      onPause={handleClipPause}
+                      onBulkSubtitle={handleBulkSubtitles}
+                      clipCount={results.clips.length}
+                      bulkProgress={bulkSub}
+                      onBulkHook={handleBulkHooks}
+                      bulkHookProgress={bulkHook}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );

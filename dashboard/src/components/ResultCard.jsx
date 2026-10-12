@@ -44,7 +44,7 @@ const StepNo = ({ n, done }) => (
     <span className={`absolute top-1 left-1.5 readout text-[9px] ${done ? 'text-ok' : 'text-brass'}`}>{done ? `${n}✓` : n}</span>
 );
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null, panel = null, onPanelClose = null, onOpenTab = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -305,6 +305,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [isTranslating, setIsTranslating] = useState(false);
     const [showHookModal, setShowHookModal] = useState(false);
     const [showChecks, setShowChecks] = useState(false);
+    // An editor shown as a workspace tab returns to the clip tab when it is done.
+    const closeSubtitleEditor = () => { setShowSubtitleModal(false); if (panel === 'subs') onPanelClose?.(); };
+    const closeHookEditor = () => { setShowHookModal(false); if (panel === 'hook') onPanelClose?.(); };
     const [showTranslateModal, setShowTranslateModal] = useState(false);
     const [editError, setEditError] = useState(null);
 
@@ -500,7 +503,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     setCurrentVideoUrl(serverUrl);
                 }
                 if (videoRef.current) videoRef.current.load();
-                setShowSubtitleModal(false);
+                closeSubtitleEditor();
             }
         } catch (e) {
             setEditError(e.message);
@@ -530,7 +533,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 });
                 setCurrentVideoUrl(blobUrl);
                 if (videoRef.current) videoRef.current.load();
-                setShowSubtitleModal(false);
+                closeSubtitleEditor();
                 return;
             }
 
@@ -589,7 +592,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     setCurrentVideoUrl(serverUrl);
                 }
                 if (videoRef.current) videoRef.current.load();
-                setShowSubtitleModal(false);
+                closeSubtitleEditor();
             }
         } catch (e) {
             setEditError(e.message);
@@ -616,7 +619,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 });
                 setCurrentVideoUrl(blobUrl);
                 if (videoRef.current) videoRef.current.load();
-                setShowHookModal(false);
+                closeHookEditor();
                 return;
             }
 
@@ -649,7 +652,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 setServerVideoFile(data.new_video_url.split('/').pop());
                 setBurnedHook(data.burned_hook?.text ?? payload.text ?? null);
                 if (videoRef.current) videoRef.current.load();
-                setShowHookModal(false);
+                closeHookEditor();
             }
         } catch (e) {
             setEditError(e.message);
@@ -681,7 +684,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 setServerVideoFile(data.new_video_url.split('/').pop());
                 setBurnedHook(null);
                 if (videoRef.current) videoRef.current.load();
-                setShowHookModal(false);
+                closeHookEditor();
             }
         } catch (e) {
             setEditError(e.message);
@@ -885,7 +888,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 which pushed the title, captions and every action off-screen.
                 Capping the height and centring keeps the whole card scannable
                 without letterboxing the clip. */}
-            <div className={`bg-black relative shrink-0 aspect-[9/16] group/video ${stacked
+            <div className={`bg-black relative shrink-0 aspect-[9/16] group/video ${panel === 'subs' || panel === 'hook' ? 'hidden' : ''} ${stacked
                 ? 'w-full max-w-[min(300px,calc(52vh*0.5625))] mx-auto mt-4 rounded-input overflow-hidden'
                 : `w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 ${focus ? 'md:h-full md:w-auto' : 'md:w-[236px] md:aspect-auto'}`}`}>
                 <video
@@ -994,7 +997,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             </div>
 
             {/* Right: Content & Details */}
-            <div className="flex-1 p-4 md:p-5 flex flex-col overflow-hidden min-w-0">
+            <div className={`flex-1 p-4 md:p-5 flex flex-col overflow-hidden min-w-0 ${panel ? 'hidden' : ''}`}>
                 <div className="mb-4">
                     {editingMeta ? (
                         <div className="space-y-2 mb-2">
@@ -1107,7 +1110,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     {!hideSteps && (<>
                     {onEditClip && (
                         <button
-                            onClick={() => { videoRef.current?.pause(); onEditClip(index); }}
+                            onClick={() => { videoRef.current?.pause(); if (onOpenTab) onOpenTab(index, 'trim'); else onEditClip(index); }}
                             disabled={busy}
                             className={QUIET_BTN}
                         >
@@ -1118,7 +1121,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
                     {onReframeClip && (
                         <button
-                            onClick={() => { videoRef.current?.pause(); onReframeClip(index); }}
+                            onClick={() => { videoRef.current?.pause(); if (onOpenTab) onOpenTab(index, 'frame'); else onReframeClip(index); }}
                             disabled={busy}
                             className={QUIET_BTN}
                         >
@@ -1128,7 +1131,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     )}
 
                     <button
-                        onClick={() => { videoRef.current?.pause(); setShowSubtitleModal(true); }}
+                        onClick={() => { videoRef.current?.pause(); if (onOpenTab) onOpenTab(index, 'subs'); else setShowSubtitleModal(true); }}
                         disabled={busy}
                         className={QUIET_BTN}
                     >
@@ -1137,7 +1140,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     </button>
 
                     <button
-                        onClick={() => { videoRef.current?.pause(); setShowHookModal(true); }}
+                        onClick={() => { videoRef.current?.pause(); if (onOpenTab) onOpenTab(index, 'hook'); else setShowHookModal(true); }}
                         disabled={busy}
                         className={QUIET_BTN}
                     >
@@ -1146,7 +1149,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     </button>
 
                     <button
-                        onClick={() => { videoRef.current?.pause(); setShowChecks(true); }}
+                        onClick={() => { videoRef.current?.pause(); if (onOpenTab) onOpenTab(index, 'check'); else setShowChecks(true); }}
                         disabled={busy}
                         className={QUIET_BTN}
                         title="pre-publish checklist: length, format, sound, safe zones, title"
@@ -1377,12 +1380,13 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             </Modal>
 
             <SubtitleModal
-                isOpen={showSubtitleModal}
-                onClose={() => setShowSubtitleModal(false)}
+                inline={panel === 'subs'}
+                isOpen={showSubtitleModal || panel === 'subs'}
+                onClose={panel === 'subs' ? () => onPanelClose?.() : () => setShowSubtitleModal(false)}
                 onGenerate={handleSubtitle}
                 onApplyAll={onBulkSubtitle ? async (options) => {
                     await onBulkSubtitle({ ...options, clipIndex: index });
-                    setShowSubtitleModal(false);
+                    closeSubtitleEditor();
                 } : undefined}
                 onRemove={handleRemoveSubtitles}
                 bulkCount={clipCount}
@@ -1395,20 +1399,22 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             />
 
             <ChecklistModal
-                isOpen={showChecks}
-                onClose={() => setShowChecks(false)}
+                inline={panel === 'check'}
+                isOpen={showChecks || panel === 'check'}
+                onClose={panel === 'check' ? () => onPanelClose?.() : () => setShowChecks(false)}
                 jobId={jobId}
                 clipIndex={index}
                 clipVersion={clip.video_url}
                 onResult={(i, body) => onChecks?.(i, body.summary)}
             />
             <HookModal
-                isOpen={showHookModal}
-                onClose={() => setShowHookModal(false)}
+                inline={panel === 'hook'}
+                isOpen={showHookModal || panel === 'hook'}
+                onClose={panel === 'hook' ? () => onPanelClose?.() : () => setShowHookModal(false)}
                 onGenerate={handleHook}
                 onApplyAll={onBulkHook ? async (options) => {
                     await onBulkHook(options);
-                    setShowHookModal(false);
+                    closeHookEditor();
                 } : undefined}
                 bulkCount={clipCount}
                 bulkProgress={bulkHookProgress}

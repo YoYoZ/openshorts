@@ -24,7 +24,7 @@ export function ChecksBadge({ summary, className = '' }) {
 }
 
 // Pre-publish checklist for one clip (GET /api/clip/{job}/{index}/checks).
-export default function ChecklistModal({ isOpen, onClose, jobId, clipIndex, clipVersion, onResult }) {
+export default function ChecklistModal({ inline = false, isOpen, onClose, jobId, clipIndex, clipVersion, onResult }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -52,7 +52,7 @@ export default function ChecklistModal({ isOpen, onClose, jobId, clipIndex, clip
 
     const items = data?.items || [];
     return (
-        <Modal isOpen={isOpen} onClose={onClose} eyebrow="BEFORE YOU POST" title={`checklist · clip #${clipIndex + 1}`} size="md"
+        <Modal inline={inline} isOpen={isOpen} onClose={onClose} eyebrow="BEFORE YOU POST" title={`checklist · clip #${clipIndex + 1}`} size="md"
             footer={(
                 <div className="flex items-center gap-3">
                     {data?.summary && (
@@ -65,7 +65,7 @@ export default function ChecklistModal({ isOpen, onClose, jobId, clipIndex, clip
                     <button type="button" onClick={load} disabled={loading} className="btn-ghost px-3 py-1.5 text-xs">
                         {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />} re-check
                     </button>
-                    <button type="button" onClick={onClose} className="btn-primary px-3 py-1.5 text-xs">close</button>
+                    {!inline && <button type="button" onClick={onClose} className="btn-primary px-3 py-1.5 text-xs">close</button>}
                 </div>
             )}>
             {error && <p className="text-sm text-danger">{error}</p>}

@@ -12,6 +12,8 @@ import { X } from 'lucide-react';
  *  - children: body content
  *  - footer: optional node pinned under the body
  *  - hideClose: hide the X button
+ *  - inline: render as a panel that fills its container (the clip
+ *    workspace's tabs) instead of an overlay; onClose = back to the clip
  */
 const SIZES = {
   sm: 'max-w-sm',
@@ -20,8 +22,27 @@ const SIZES = {
   xl: 'max-w-5xl',
 };
 
-export default function Modal({ isOpen, onClose, title, eyebrow, size = 'md', children, footer, hideClose = false }) {
+export default function Modal({ isOpen, onClose, title, eyebrow, size = 'md', children, footer, hideClose = false, inline = false }) {
   if (!isOpen) return null;
+
+  if (inline) {
+    return (
+      <div className="card relative w-full h-full min-h-0 flex flex-col overflow-hidden">
+        {(title || eyebrow) && (
+          <div className="px-4 sm:px-6 py-3 border-b border-rule shrink-0 flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              {eyebrow && <p className="eyebrow mb-0.5">{eyebrow}</p>}
+              {title && <h2 className="text-lg font-semibold tracking-tight text-ink truncate">{title}</h2>}
+            </div>
+          </div>
+        )}
+        <div className="px-4 sm:px-6 py-5 overflow-y-auto overscroll-contain custom-scrollbar grow min-h-0">
+          {children}
+        </div>
+        {footer && <div className="px-4 sm:px-6 py-4 border-t border-rule shrink-0">{footer}</div>}
+      </div>
+    );
+  }
 
   return (
     /* Phone: a bottom sheet — anchored to the thumb, edge to edge, and free to

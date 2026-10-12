@@ -95,7 +95,7 @@ function editorReducer(state, action) {
     }
 }
 
-export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered }) {
+export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, inline = false }) {
     const { refreshMe } = useAuth();
     const [edl, setEdl] = useState(null);
     const [loadError, setLoadError] = useState(null);
@@ -1099,7 +1099,8 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     );
 
     return (
-        <div className="fixed inset-0 z-[110] bg-paper flex flex-col animate-fade">
+        // inline: a tab of the clip workspace (fills it) instead of a full-screen overlay
+        <div className={inline ? 'h-full min-h-0 bg-paper flex flex-col' : 'fixed inset-0 z-[110] bg-paper flex flex-col animate-fade'}>
             {/* header */}
             <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-rule flex items-start justify-between gap-4 shrink-0">
                 <div className="min-w-0">
