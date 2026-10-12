@@ -2587,7 +2587,8 @@ function App() {
                 </div>
               ) : (
                 <div className="h-full overflow-y-auto p-3 sm:p-6">
-                  <div className="max-w-6xl mx-auto md:h-full">
+                  {/* The clip view reads best capped; editor tabs use the whole width. */}
+                  <div className={`${wsTab === 'subs' || wsTab === 'hook' ? '' : 'max-w-6xl'} mx-auto md:h-full`}>
                     <ResultCard
                       hideSteps
                       panel={wsTab === 'subs' || wsTab === 'hook' || wsTab === 'check' ? wsTab : null}

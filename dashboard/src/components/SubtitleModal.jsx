@@ -355,11 +355,13 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
 
     return (
         <Modal inline={inline} isOpen={isOpen} onClose={onClose} size="xl" eyebrow="EDITOR · SUBTITLES" title="subtitles">
-            {/* As a workspace tab the editor uses the full height: the preview
-                as tall as fits, the settings scrolling in their own column. */}
+            {/* As a workspace tab: three full-height columns. The preview keeps
+                its 9:16 shape, the style settings scroll in the middle, and the
+                caption text gets all the remaining width (as a popup the text
+                stays a collapsible box inside the settings). */}
             <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:aspect-auto md:h-full md:min-h-0' : 'max-h-[600px]'}`}>
+                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:flex-none md:w-auto' : 'max-h-[600px]'}`}>
                     {captionsLoading ? (
                         <div className="flex items-center gap-2 text-muted">
                             <Loader2 size={16} className="animate-spin" />
@@ -389,7 +391,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                 </div>
 
                 {/* Right: Controls */}
-                <div className={`w-full flex flex-col ${inline ? 'md:w-96 md:h-full md:min-h-0' : 'md:w-80'}`}>
+                <div className={`w-full flex flex-col ${inline ? 'md:w-96 md:shrink-0 md:h-full md:min-h-0' : 'md:w-80'}`}>
                     <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
                         {/* Caption presets (server-side karaoke burn) */}
                         <div>
@@ -500,8 +502,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                             />
                         </div>
 
-                        {/* Editable Transcript (collapsible) */}
-                        {useRemotionPreview && (
+                        {/* Editable Transcript (collapsible; its own column in a tab) */}
+                        {useRemotionPreview && !inline && (
                             <div>
                                 <button
                                     type="button"
@@ -651,6 +653,27 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                         })()}
                     </div>
                 </div>
+
+                {/* The caption text, in a workspace tab: all the width that is left. */}
+                {inline && useRemotionPreview && (
+                    <div className="w-full md:flex-1 md:min-w-[280px] flex flex-col md:h-full md:min-h-0">
+                        <div className="flex items-baseline justify-between mb-2 shrink-0">
+                            <span className="eyebrow">Caption text</span>
+                            <span className="readout normal-case">{captions.length} words</span>
+                        </div>
+                        <textarea
+                            value={editableText}
+                            onChange={(e) => handleTextEdit(e.target.value)}
+                            dir="auto"
+                            spellCheck
+                            className="input-field resize-none leading-relaxed text-[15px] flex-1 min-h-[240px]"
+                            placeholder="Edit subtitle text..."
+                        />
+                        <p className="text-[11px] text-muted mt-2 shrink-0 leading-snug">
+                            Fix words here; timing follows the spoken audio. Apply renders the clip with this text.
+                        </p>
+                    </div>
+                )}
             </div>
         </Modal>
     );
