@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, Cpu, Coins, Bot, CheckCircle2, AlertCircle } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Loader2, Cpu, Coins, Bot, CheckCircle2, AlertCircle, X } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 // Render kinds are already human labels ("burning subtitles", "adding hook").
@@ -7,13 +8,9 @@ const KIND_LABEL = {};
 const STAGE_ORDER = ['download', 'transcribe', 'select', 'render'];
 const STAGE_LABEL = { download: 'downloading', transcribe: 'transcribing', select: 'picking moments', render: 'rendering clips' };
 
-// Desktop/browser notification; silently nothing when not permitted.
-function notify(title, body) {
-    try {
-        if (!('Notification' in window)) return;
-        if (Notification.permission === 'granted') new Notification(title, { body, silent: false });
-    } catch { /* ignore */ }
-}
+// Finished renders and jobs are announced inside the app window (bottom
+// right), never as system notifications.
+const TOAST_MS = 6000;
 
 function Bar({ pct }) {
     return (
@@ -33,12 +30,15 @@ export default function StatusDock({ onOpen }) {
     const [llm, setLlm] = useState(null);
     const seenJobs = useRef(new Map());   // job_id -> title, while queued/processing
     const lastRecent = useRef(null);      // newest finished render already handled
-
-    useEffect(() => {
-        try {
-            if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-        } catch { /* ignore */ }
-    }, []);
+    const [toasts, setToasts] = useState([]);
+    const dismiss = (id) => setToasts((t) => t.filter((x) => x.id !== id));
+    const notifyRef = useRef(null);
+    notifyRef.current = (title, body, ok = true, jobId = null) => {
+        const id = Math.random().toString(36).slice(2);
+        setToasts((t) => [...t.slice(-3), { id, title, body, ok, jobId }]);
+        setTimeout(() => dismiss(id), TOAST_MS);
+    };
+    const notify = (...args) => notifyRef.current(...args);
 
     useEffect(() => {
         let stop = false;
@@ -53,7 +53,7 @@ export default function StatusDock({ onOpen }) {
                 if (lastRecent.current !== null) {
                     recent.filter((r) => r.finished > lastRecent.current).forEach((r) => {
                         notify(r.ok ? `Clip #${r.clip_index + 1} ready` : `Clip #${r.clip_index + 1} failed`,
-                            `${KIND_LABEL[r.kind] || r.kind} · ${r.title}`);
+                            `${KIND_LABEL[r.kind] || r.kind} · ${r.title}`, r.ok, r.job_id);
                     });
                 }
                 lastRecent.current = Math.max(lastRecent.current || 0, newest);
@@ -63,8 +63,8 @@ export default function StatusDock({ onOpen }) {
                     if (live.has(id)) continue;
                     seenJobs.current.delete(id);
                     apiFetch(`/api/status/${id}`).then((r) => r.json()).then((s) => {
-                        if (s.status === 'completed') notify('Clips ready', `${s.result?.clips?.length ?? ''} clips · ${title}`);
-                        else if (s.status === 'failed') notify('Processing failed', title);
+                        if (s.status === 'completed') notify('Clips ready', `${s.result?.clips?.length ?? ''} clips · ${title}`, true, id);
+                        else if (s.status === 'failed') notify('Processing failed', title, false, id);
                     }).catch(() => {});
                 }
                 (a.jobs || []).forEach((j) => seenJobs.current.set(j.job_id, j.title));
@@ -101,8 +101,28 @@ export default function StatusDock({ onOpen }) {
     const renders = act?.renders || [];
     const busy = jobs.length + renders.length;
 
+    const toastStack = toasts.length > 0 && createPortal(
+        <div className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 w-[320px] max-w-[calc(100vw-2rem)]" aria-live="polite">
+            {toasts.map((t) => (
+                <div key={t.id} className="card flex items-start gap-3 px-3.5 py-3 shadow-2xl animate-fade">
+                    {t.ok ? <CheckCircle2 size={16} className="text-ok shrink-0 mt-0.5" /> : <AlertCircle size={16} className="text-danger shrink-0 mt-0.5" />}
+                    <button type="button" onClick={() => { if (t.jobId) onOpen?.(t.jobId); dismiss(t.id); }}
+                        className="flex-1 min-w-0 text-left">
+                        <span className="block text-sm text-ink">{t.title}</span>
+                        <span className="block text-xs text-muted truncate">{t.body}</span>
+                    </button>
+                    <button type="button" onClick={() => dismiss(t.id)} aria-label="dismiss" className="text-muted hover:text-ink shrink-0">
+                        <X size={14} />
+                    </button>
+                </div>
+            ))}
+        </div>,
+        document.body,
+    );
+
     return (
         <div className="space-y-3 text-xs">
+            {toastStack}
             {busy > 0 && (
                 <div className="hidden lg:block space-y-2">
                     <p className="readout text-muted flex items-center gap-1.5">
