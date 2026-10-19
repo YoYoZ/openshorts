@@ -35,6 +35,25 @@ HOOK_FONTS = {
     "anton": (os.path.join(FONT_DIR, "Anton-Regular.ttf"), 0.08),
     "serif": (FONT_PATH, 0.05),
 }
+# Any other name is an installed family (font_catalog, the same list the
+# caption editor offers), sized like a regular-width sans.
+SYSTEM_FONT_FACTOR = 0.06
+
+
+def resolve_hook_font(font):
+    """(path, size factor) for a HOOK_FONTS key or an installed family name;
+    Montserrat when the name is unknown or the family is not installed."""
+    if font in HOOK_FONTS:
+        return HOOK_FONTS[font]
+    if font:
+        try:
+            import font_catalog
+            path = font_catalog.find(font, bold=True)
+        except Exception:
+            path = None
+        if path:
+            return path, SYSTEM_FONT_FACTOR
+    return HOOK_FONTS["montserrat"]
 
 # Codepoint ranges NotoSerif has no glyphs for (would render as tofu boxes).
 _EMOJI_RE = re.compile(
@@ -278,8 +297,7 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
     # Montserrat for every style unless another face is chosen: the serif
     # default of the boxed styles looked like a rendering bug next to the
     # sans everything else uses.
-    default_font = "montserrat"
-    font_path, size_factor = HOOK_FONTS.get(font or default_font, HOOK_FONTS[default_font])
+    font_path, size_factor = resolve_hook_font(font)
     base_font_size = int(target_width * size_factor)
     font_size = int(base_font_size * font_scale)
     # Box padding follows the font size (a fixed 30 px looked cramped once

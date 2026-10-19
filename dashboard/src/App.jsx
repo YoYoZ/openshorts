@@ -5,6 +5,7 @@ import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
 import ClipRow from './components/ClipRow';
+import AudioEditor from './components/AudioEditor';
 import { clipCopyBlock } from './lib/clipCopy';
 import ProcessingAnimation from './components/ProcessingAnimation';
 import JobProgress from './components/JobProgress';
@@ -524,7 +525,7 @@ function App() {
     const keys = {
       ' ': 'play', k: 'play', j: 'back', l: 'fwd', o: 'ok', s: 'safe', h: 'before',
     };
-    const tabKeys = { 1: 'trim', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'check' };
+    const tabKeys = { 1: 'trim', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'audio', 6: 'check' };
     const onKey = (e) => {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -2555,7 +2556,8 @@ function App() {
           ['frame', 'Framing', '2', !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length)), false],
           ['subs', 'Subtitles', '3', !!(clip.caption_style || clip.caption_words), false],
           ['hook', 'Hook', '4', !!clip.auto_hook?.text, false],
-          ['check', 'Check', '5', !!chk && !chk.fail && !chk.warn, !!(chk?.fail || chk?.warn)],
+          ['audio', 'Audio', '5', !!clip.audio_fx?.chain?.length, false],
+          ['check', 'Check', '6', !!chk && !chk.fail && !chk.warn, !!(chk?.fail || chk?.warn)],
         ];
         const backToClip = () => setWsTab('clip');
         return (
@@ -2610,6 +2612,16 @@ function App() {
                   onClose={backToClip}
                   onRerendered={handleClipRerendered}
                 />
+              ) : wsTab === 'audio' ? (
+                <AudioEditor
+                  key={`ws-audio-${focusIdx}`}
+                  jobId={jobId}
+                  clipIndex={focusIdx}
+                  onApplied={(body) => {
+                    handleClipRerendered(focusIdx, { new_video_url: body.video_url, start: clip.start, end: clip.end, recipe: clip.recipe });
+                    patchClip(focusIdx, { audio_fx: body.audio_fx });
+                  }}
+                />
               ) : wsTab === 'frame' ? (
                 <div className="h-full p-3 sm:p-6">
                   <ReframeEditor
@@ -2630,6 +2642,7 @@ function App() {
                       hideSteps
                       panel={wsTab === 'subs' || wsTab === 'hook' || wsTab === 'check' ? wsTab : null}
                       onPanelClose={backToClip}
+                      onOpenTab={(_, tab) => setWsTab(tab)}
                       onSchedule={scheduleOne}
                       key={`focus-${jobId}-${focusIdx}-${clip.video_url || ''}`}
                       clip={clip}

@@ -24,7 +24,7 @@ export function ChecksBadge({ summary, className = '' }) {
 }
 
 // Pre-publish checklist for one clip (GET /api/clip/{job}/{index}/checks).
-export default function ChecklistModal({ inline = false, isOpen, onClose, jobId, clipIndex, clipVersion, onResult }) {
+export default function ChecklistModal({ inline = false, isOpen, onClose, jobId, clipIndex, clipVersion, onResult, onFix }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -88,6 +88,11 @@ export default function ChecklistModal({ inline = false, isOpen, onClose, jobId,
                                             <p className="text-sm text-ink2">{i.label}</p>
                                             {i.detail && (
                                                 <p className={`text-xs break-words ${i.status === 'ok' || i.status === 'info' ? 'text-muted' : 'text-ink2/80'}`}>{i.detail}</p>
+                                            )}
+                                            {i.fix && i.status !== 'ok' && onFix && (
+                                                <button type="button" onClick={() => onFix(i.fix)} className="text-xs text-brass hover:underline mt-0.5">
+                                                    fix it in the {i.fix} tab →
+                                                </button>
                                             )}
                                         </div>
                                     </div>

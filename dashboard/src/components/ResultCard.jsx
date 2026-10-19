@@ -1439,6 +1439,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 clipIndex={index}
                 clipVersion={clip.video_url}
                 onResult={(i, body) => onChecks?.(i, body.summary)}
+                onFix={onOpenTab ? (tab) => onOpenTab(index, tab) : undefined}
             />
             <HookModal
                 inline={panel === 'hook'}

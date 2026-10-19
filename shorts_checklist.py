@@ -110,12 +110,18 @@ def media_facts(path):
         except (OSError, ValueError):
             cache = {}
         hit = cache.get(name)
-        if hit and hit.get("mtime") == mtime:
+        if (hit and hit.get("mtime") == mtime
+                and ("clip_regions" in hit["facts"] or not hit["facts"].get("has_audio"))):
             return hit["facts"]
     facts = _probe(path)
     facts["mtime"] = mtime
     if facts["has_audio"]:
         facts.update(_audio_analysis(path))
+        try:   # flat-topped runs, not just a hot peak (audio_fx.analyze)
+            import audio_fx
+            facts["clip_regions"] = audio_fx.analyze(path)["regions"]
+        except Exception:
+            facts["clip_regions"] = None
     facts["black_start"] = _black_start(path)
     with _cache_lock:
         try:
@@ -129,8 +135,11 @@ def media_facts(path):
     return facts
 
 
-def _item(items, group, id_, label, status, detail=""):
-    items.append({"id": id_, "group": group, "label": label, "status": status, "detail": detail})
+def _item(items, group, id_, label, status, detail="", fix=None):
+    item = {"id": id_, "group": group, "label": label, "status": status, "detail": detail}
+    if fix:
+        item["fix"] = fix   # the workspace tab that repairs it
+    items.append(item)
 
 
 def _fmt_s(s):
@@ -200,8 +209,18 @@ def run(clip, facts, siblings=()):
                   f"{lufs:.1f} LUFS: loud; YouTube will turn it down and it may sound squashed. Aim for about -14.")
         else:
             _item(items, "audio", "loudness", "Loudness", "ok", f"{lufs:.1f} LUFS")
-        if peak is not None and peak > -0.5:
-            _item(items, "audio", "peak", "Clipping", "warn", f"Peaks at {peak:.1f} dBFS: likely distortion.")
+        regions = facts.get("clip_regions")
+        if regions:
+            first = regions[0]["start"]
+            _item(items, "audio", "peak", "Clipping", "warn",
+                  f"Clipped in {len(regions)} spot{'s' if len(regions) != 1 else ''} "
+                  f"(first at {int(first // 60)}:{int(first % 60):02d}): distortion. "
+                  "The Audio tab can repair it.", fix="audio")
+        elif regions is None and peak is not None and peak > -0.5:
+            _item(items, "audio", "peak", "Clipping", "warn", f"Peaks at {peak:.1f} dBFS: likely distortion.",
+                  fix="audio")
+        else:
+            _item(items, "audio", "peak", "Clipping", "ok", "no clipped spots")
 
         silences = facts.get("silences") or []
         lead = next((s for s in silences if s[0] <= 0.05), None)

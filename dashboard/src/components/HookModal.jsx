@@ -8,6 +8,7 @@ function RemotionPreview(props) {
 }
 import Modal from './ui/Modal';
 import SegmentedControl from './ui/SegmentedControl';
+import { FontPicker } from './TypographyControls';
 
 const ENTRANCE_OPTIONS = [
     { value: 'spring', label: 'Bounce' },
@@ -27,7 +28,8 @@ const HOOK_STYLES = [
     { value: 'outline_yellow', label: 'Outline+', box: 'transparent', text: '#FFD600', outline: true },
 ];
 
-// Must mirror hooks.py HOOK_FONTS (all bundled: /fonts/*.ttf).
+// Bundled faces (hooks.py HOOK_FONTS, /fonts/*.ttf); any installed family
+// comes from the same picker as the caption editor.
 const FONT_OPTIONS = [
     { value: 'montserrat', label: 'Montserrat' },
     { value: 'anton', label: 'Anton' },
@@ -38,6 +40,7 @@ const FONT_CSS = {
     anton: { fontFamily: "'Anton-Regular', Impact, sans-serif", fontWeight: 400 },
     serif: { fontFamily: "'Noto Serif', Georgia, serif", fontWeight: 700 },
 };
+const fontCss = (f) => FONT_CSS[f] || { fontFamily: `"${f}", sans-serif`, fontWeight: 700 };
 // The style's own typeface when none is picked (what hooks.py renders).
 // Montserrat for every style unless another face is picked (hooks.py agrees).
 const styleFont = () => 'montserrat';
@@ -133,7 +136,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                     style={{
                                         ...getSizeStyle(),
                                         backgroundColor: 'rgba(255, 255, 255, 0.82)',
-                                        ...FONT_CSS[effectiveFont],
+                                        ...fontCss(effectiveFont),
                                         boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
                                         paddingTop: '10px',
                                         paddingBottom: '10px',
@@ -175,7 +178,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                         title={s.label}
                                     >
                                         {s.value === 'pill' ? (
-                                            <span className="flex flex-col items-center gap-0.5 py-0.5" style={FONT_CSS[font || styleFont(s.value)]}>
+                                            <span className="flex flex-col items-center gap-0.5 py-0.5" style={fontCss(font || styleFont(s.value))}>
                                                 <span className="rounded-md px-1.5 text-[13px] leading-5 bg-white text-black">Aa Bb</span>
                                                 <span className="rounded-md px-1.5 text-[13px] leading-5 bg-white text-black">Cc</span>
                                             </span>
@@ -183,7 +186,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                             <span
                                                 className="block rounded-md px-1 py-1.5 text-[15px] leading-5"
                                                 style={{
-                                                    ...FONT_CSS[font || styleFont(s.value)],
+                                                    ...fontCss(font || styleFont(s.value)),
                                                     backgroundColor: s.box,
                                                     color: s.text,
                                                     textShadow: s.outline ? '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' : 'none',
@@ -199,6 +202,9 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                         {/* Typeface */}
                         <div>
                             <p className="eyebrow mb-2">Font</p>
+                            <FontPicker value={FONT_CSS[effectiveFont] ? '' : effectiveFont} onChange={setFont}
+                                needsCyrillic={/[Ѐ-ӿ]/.test(text)} />
+                            <p className="readout normal-case mt-2 mb-1.5">or bundled</p>
                             <div className="grid grid-cols-3 gap-1.5">
                                 {FONT_OPTIONS.map((f) => (
                                     <button

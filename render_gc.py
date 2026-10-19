@@ -1,7 +1,7 @@
 """Delete superseded renders inside a project folder.
 
 Every subtitle / hook / recut / reframe pass writes a full new copy of the clip
-(``subtitled_<ts>_``, ``hooked_<ts>_``, ``recut_<ts>_<hex>_`` prefixes) and the
+(``audio_<ts>_``, ``subtitled_<ts>_``, ``hooked_<ts>_``, ``recut_<ts>_<hex>_`` prefixes) and the
 old ones were never removed: a 10-clip project grew to ~5 GB, ~4 GB of it dead
 copies. ``plan()`` works out what is safe to drop; ``collect()`` drops it.
 
@@ -21,8 +21,8 @@ import os
 import re
 import time
 
-_LAYER = re.compile(r"^(subtitled_\d+_|hooked_\d+_|recut_\d+_[0-9a-f]+_|edited_|wm_)")
-_DERIVED_VIDEO = re.compile(r"(^subtitled_|^hooked_|^recut_|^edited_|^wm_|^temp_|_clip_\d+\.mp4$)")
+_LAYER = re.compile(r"^(audio_\d+_|subtitled_\d+_|hooked_\d+_|recut_\d+_[0-9a-f]+_|edited_|wm_)")
+_DERIVED_VIDEO = re.compile(r"(^audio_|^subtitled_|^hooked_|^recut_|^edited_|^wm_|^temp_|_clip_\d+\.mp4$)")
 _VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm")
 
 
@@ -54,6 +54,8 @@ def _deletable_kind(name):
         return "temp file"
     if name.startswith("autosubs_") and name.endswith(".ass"):
         return "caption script"
+    if name.startswith("audiopreview_") and name.endswith(".wav"):
+        return "audio preview"
     lower = name.lower()
     if lower.endswith(_VIDEO_EXT) and _DERIVED_VIDEO.search(name):
         return "old render"

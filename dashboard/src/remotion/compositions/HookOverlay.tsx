@@ -12,7 +12,7 @@ import {
   notoSerifFontFace,
   montserratFontFace,
   antonFontFace,
-  HOOK_FONTS,
+  hookTypeface,
 } from "../lib/fonts";
 
 interface HookOverlayProps {
@@ -130,7 +130,7 @@ const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
 
   // Typeface and size as hooks.py: the chosen font, else the style's own;
   // font size = factor x the 90%-of-width box.
-  const typeface = HOOK_FONTS[config.font ?? "montserrat"] ?? HOOK_FONTS.montserrat;
+  const typeface = hookTypeface(config.font);
   const fontSize = Math.round(1080 * 0.9 * typeface.factor * scale);
   const outlinePx = Math.round(look.outlinePx * scale);
 

@@ -449,10 +449,16 @@ function HookSection({ settings, onSaved }) {
                         'pill', 'classic', 'dark', 'yellow', 'red', 'outline', 'outline_yellow',
                     ].map((v) => ({ value: v, label: v.replace('_', ' ') }))} />
                 </Field>
-                <Field label="font">
-                    <Select value={d.font || 'montserrat'} onChange={(v) => s.set({ font: v })} options={[
-                        { value: 'montserrat', label: 'Montserrat' }, { value: 'anton', label: 'Anton' }, { value: 'serif', label: 'Serif' },
-                    ]} />
+                <Field label="font" hint="bundled, or any installed font below">
+                    <div className="space-y-2">
+                        <Select value={['montserrat', 'anton', 'serif'].includes(d.font || 'montserrat') ? (d.font || 'montserrat') : ''}
+                            onChange={(v) => v && s.set({ font: v })} options={[
+                                { value: '', label: d.font ? `installed: ${d.font}` : 'installed font' },
+                                { value: 'montserrat', label: 'Montserrat' }, { value: 'anton', label: 'Anton' }, { value: 'serif', label: 'Serif' },
+                            ]} />
+                        <FontPicker value={['montserrat', 'anton', 'serif'].includes(d.font || 'montserrat') ? '' : d.font}
+                            onChange={(v) => s.set({ font: v })} />
+                    </div>
                 </Field>
                 <Field label="position">
                     <Select value={d.position} onChange={(v) => s.set({ position: v })} options={[

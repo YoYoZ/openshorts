@@ -49,6 +49,12 @@ export const HOOK_FONTS: Record<string, { family: string; weight: number; factor
   serif: { family: `'${NOTO_SERIF_FONT_FAMILY}', 'Noto Serif', Georgia, serif`, weight: 700, factor: 0.05 },
 };
 
+/** A HOOK_FONTS key, or an installed family (hooks.py SYSTEM_FONT_FACTOR). */
+export function hookTypeface(font?: string | null) {
+  if (!font) return HOOK_FONTS.montserrat;
+  return HOOK_FONTS[font] ?? { family: `"${font}", sans-serif`, weight: 700, factor: 0.06 };
+}
+
 /**
  * Map of subtitle font families to their CSS-safe names.
  * These match the options available in SubtitleModal.jsx.

@@ -728,6 +728,7 @@ def _canonical_clip_file(output_dir, base_name, index):
         derived = (glob.glob(os.path.join(output_dir, f"subtitled_*_{clean}"))
                    + glob.glob(os.path.join(output_dir, f"recut_*_{clean}"))
                    + glob.glob(os.path.join(output_dir, f"hooked_*_{clean}"))
+                   + glob.glob(os.path.join(output_dir, f"audio_*_{clean}"))
                    + glob.glob(os.path.join(output_dir, f"hook_{clean}"))
                    + glob.glob(os.path.join(output_dir, f"wm_*{clean}")))
     except Exception:
@@ -797,6 +798,19 @@ def _strip_watermark_copy(output_dir, filename):
     return filename
 
 
+_AUDIO_LAYER = re.compile(r'^audio_\d+_(.+)$')
+
+
+def _strip_audio_layer(output_dir, filename):
+    """Walk ``audio_<ts>_`` prefixes (the audio repair layer, always the
+    outermost) back to the file it was made from; same fail-safe contract."""
+    while True:
+        m = _AUDIO_LAYER.match(filename)
+        if not m or not os.path.exists(os.path.join(output_dir, m.group(1))):
+            return filename
+        filename = m.group(1)
+
+
 def _strip_burned_captions(output_dir, filename):
     """Walk ``subtitled_<ts>_`` prefixes back to the file without burned captions.
 
@@ -805,6 +819,7 @@ def _strip_burned_captions(output_dir, filename):
     version).
     """
     filename = _strip_watermark_copy(output_dir, filename)
+    filename = _strip_audio_layer(output_dir, filename)
     while True:
         m = re.match(r'^subtitled_\d+_(.+)$', filename)
         if not m or not os.path.exists(os.path.join(output_dir, m.group(1))):
@@ -818,11 +833,42 @@ def _strip_burned_hook(output_dir, filename):
     the name is returned unchanged when there is nothing to strip or the
     underlying file is gone."""
     filename = _strip_watermark_copy(output_dir, filename)
+    filename = _strip_audio_layer(output_dir, filename)
     while True:
         m = re.match(r'^(?:hooked_\d+_|hook_)(.+)$', filename)
         if not m or not os.path.exists(os.path.join(output_dir, m.group(1))):
             return filename
         filename = m.group(1)
+
+
+def _apply_audio_layer(job_id, clip_index, filename):
+    """Run the clip's audio chain (recipe ``audio_fx``, audio_fx.py) over a
+    freshly derived file, as the outermost layer: video copied, audio
+    replaced. Returns the name to serve: ``audio_<ts>_<file>``, or
+    ``filename`` itself when the clip has no chain or processing fails."""
+    output_dir = os.path.join(OUTPUT_DIR, job_id)
+    try:
+        _, data = _clip_metadata(job_id)
+        clip = (data.get("shorts") or [])[clip_index]
+    except Exception:
+        return filename
+    chain = [st for st in ((clip.get("audio_fx") or {}).get("chain") or []) if st.get("enabled", True)]
+    base = _strip_audio_layer(output_dir, filename)
+    if not chain:
+        return base
+    out = f"audio_{int(time.time())}_{base}"
+    try:
+        import audio_fx
+        audio_fx.apply_to_video(os.path.join(output_dir, base), chain, os.path.join(output_dir, out))
+        return out
+    except Exception as e:
+        print(f"⚠️  Audio chain failed on {base}: {e}")
+        return base
+
+
+async def _with_audio(job_id, clip_index, filename):
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _apply_audio_layer, job_id, clip_index, filename)
 
 
 async def _deliver(request, job_id, filename):
@@ -3718,7 +3764,7 @@ def _presented_status(job_id, job):
 
 
 _UUID_DIR = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_DERIVED_VIDEO = re.compile(r"(_clip_\d+|^hooked_|^subtitled_|^recut_|^temp_|^wm_|^\.)")
+_DERIVED_VIDEO = re.compile(r"(_clip_\d+|^audio_|^hooked_|^subtitled_|^recut_|^temp_|^wm_|^\.)")
 
 
 def _project_title(job_path, meta_path, job):
@@ -4082,6 +4128,132 @@ async def update_clip_meta(job_id: str, clip_index: int, req: ClipMetaUpdate):
     if clip_index < len(mem):
         mem[clip_index].update(changes)
     return {"updated": changes}
+
+
+# --- Audio repair (audio_fx.py) ----------------------------------------------
+
+class AudioChainRequest(BaseModel):
+    chain: List[Dict[str, Any]] = []
+
+
+def _audio_clip(job_id, clip_index):
+    """(meta_path, data, clip, output_dir, base) where ``base`` is the served
+    file without its audio layer: what a chain is applied to."""
+    import urllib.parse
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    meta_path, data = _clip_metadata(job_id)
+    clips = data.get("shorts") or []
+    if not (0 <= clip_index < len(clips)):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    clip = clips[clip_index]
+    output_dir = os.path.join(OUTPUT_DIR, job_id)
+    name = os.path.basename(urllib.parse.unquote(str(clip.get("video_url") or "").split("?")[0]))
+    if not name or not os.path.isfile(os.path.join(output_dir, name)):
+        raise HTTPException(status_code=404, detail="Clip file is missing")
+    base = _strip_audio_layer(output_dir, _strip_watermark_copy(output_dir, name))
+    return meta_path, data, clip, output_dir, base
+
+
+def _audio_chain(chain):
+    """Validate a chain from the client: known built-ins, installed plugins."""
+    import audio_fx
+    out = []
+    for st in chain or []:
+        kind = st.get("type")
+        if kind == "builtin" and st.get("name") in audio_fx.BUILTINS:
+            out.append({"type": "builtin", "name": st["name"], "params": dict(st.get("params") or {}),
+                        "enabled": bool(st.get("enabled", True))})
+        elif kind == "plugin" and audio_fx.is_known_plugin(st.get("path")):
+            out.append({"type": "plugin", "path": st["path"], "name": st.get("name") or "",
+                        "params": dict(st.get("params") or {}), "enabled": bool(st.get("enabled", True))})
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown audio step: {st.get('name') or st.get('path')}")
+    return out
+
+
+@app.get("/api/audio/effects")
+async def audio_effects():
+    """Built-in effects, the plugins installed on this computer, and the
+    one-click chain offered for clipping."""
+    import audio_fx
+    plugins = await asyncio.get_event_loop().run_in_executor(None, audio_fx.scan_plugins)
+    return {"builtins": audio_fx.builtin_specs(), "plugins": plugins,
+            "suggested": audio_fx.SUGGESTED_CHAIN}
+
+
+@app.get("/api/audio/plugin")
+async def audio_plugin(path: str):
+    """A plugin's parameters (loaded in a child process)."""
+    import audio_fx
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, audio_fx.plugin_params, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load the plugin: {e}")
+
+
+_audio_analysis_cache = {}
+
+
+@app.get("/api/clip/{job_id}/{clip_index}/audio")
+async def clip_audio(job_id: str, clip_index: int):
+    """The clip's audio before repair (clipping regions, peak, loudness) and
+    its saved chain."""
+    import audio_fx
+    _, _, clip, output_dir, base = _audio_clip(job_id, clip_index)
+    path = os.path.join(output_dir, base)
+    key = (path, os.path.getmtime(path))
+    if key not in _audio_analysis_cache:
+        _audio_analysis_cache[key] = await asyncio.get_event_loop().run_in_executor(
+            None, audio_fx.analyze, path)
+    return {"analysis": _audio_analysis_cache[key],
+            "chain": (clip.get("audio_fx") or {}).get("chain") or [],
+            "source_url": f"/videos/{job_id}/{base}"}
+
+
+@app.post("/api/clip/{job_id}/{clip_index}/audio/preview")
+async def clip_audio_preview(job_id: str, clip_index: int, req: AudioChainRequest):
+    """Render the chain over the clip's audio only, for A/B listening."""
+    import audio_fx
+    _, _, _, output_dir, base = _audio_clip(job_id, clip_index)
+    chain = _audio_chain(req.chain)
+    for old in glob.glob(os.path.join(glob.escape(output_dir), f"audiopreview_{clip_index}_*.wav")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    name = f"audiopreview_{clip_index}_{int(time.time() * 1000)}.wav"
+    try:
+        analysis = await asyncio.get_event_loop().run_in_executor(
+            None, audio_fx.render, os.path.join(output_dir, base), chain, os.path.join(output_dir, name))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"url": f"/videos/{job_id}/{name}", "analysis": analysis}
+
+
+@app.post("/api/clip/{job_id}/{clip_index}/audio/apply")
+async def clip_audio_apply(job_id: str, clip_index: int, req: AudioChainRequest, request: Request):
+    """Save the chain on the clip and put it on the served file (an empty
+    chain takes the audio layer off)."""
+    meta_path, data, clip, output_dir, base = _audio_clip(job_id, clip_index)
+    chain = _audio_chain(req.chain)
+    clip["audio_fx"] = {"chain": chain} if chain else None
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    name = await _with_audio(job_id, clip_index, base)
+    if chain and name == base:
+        raise HTTPException(status_code=500, detail="The audio chain failed; see the logs.")
+    served = await _deliver(request, job_id, name)
+    url = f"/videos/{job_id}/{served}"
+    clip["video_url"] = url
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    mem = (jobs.get(job_id) or {}).get("result", {}).get("clips") or []
+    if clip_index < len(mem):
+        mem[clip_index].update({"video_url": url, "audio_fx": clip["audio_fx"]})
+    return {"video_url": url, "audio_fx": clip["audio_fx"]}
 
 
 def _clip_checks(job_id, clips, index):
@@ -4967,7 +5139,7 @@ async def edit_clip(
             if recap:
                 edited_filename = os.path.basename(recap)
 
-        edited_filename = await _deliver(request, req.job_id, edited_filename)
+        edited_filename = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, edited_filename))
         new_video_url = f"/videos/{req.job_id}/{edited_filename}"
 
         # Persist the new current file like /api/subtitle does: in-memory job
@@ -5433,7 +5605,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
         final_path = await loop.run_in_executor(
             None, _rebuild_layers, req.job_id, req.clip_index,
             os.path.join(output_dir, _clean_recut_name), req.reapply_captions)
-        served_name = await _deliver(request, req.job_id, os.path.basename(final_path))
+        served_name = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, os.path.basename(final_path)))
         new_video_url = f"/videos/{req.job_id}/{served_name}"
         updates['video_url'] = new_video_url
         clip['video_url'] = new_video_url
@@ -5790,7 +5962,7 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
         final_path = await loop.run_in_executor(
             None, _rebuild_layers, req.job_id, req.clip_index,
             os.path.join(output_dir, _clean), req.reapply_captions)
-        served_name = await _deliver(request, req.job_id, os.path.basename(final_path))
+        served_name = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, os.path.basename(final_path)))
         new_video_url = f"/videos/{req.job_id}/{served_name}"
         updates['video_url'] = new_video_url
         clip['video_url'] = new_video_url
@@ -6190,7 +6362,7 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
     if reservation_id:
         await _metering.commit_reservation(reservation_id)
 
-    output_filename = await _deliver(request, req.job_id, output_filename)
+    output_filename = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, output_filename))
 
     # 3. Update Result and Metadata
     # Update InMemory Jobs
@@ -6278,7 +6450,7 @@ async def remove_subtitles(req: RemoveSubtitlesRequest, request: Request):
 
     # Free plan: the un-captioned file is served through its wm_ copy, which
     # is reused when the clip shipped that way (no encode).
-    filename = await _deliver(request, req.job_id, filename)
+    filename = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, filename))
     new_url = f"/videos/{req.job_id}/{filename}"
     if req.clip_index < len(job.get('result', {}).get('clips', [])):
         job['result']['clips'][req.clip_index]['video_url'] = new_url
@@ -6307,7 +6479,7 @@ class HookRequest(BaseModel):
     scale: Optional[float] = None
     duration_seconds: Optional[float] = None  # None = hook visible for the whole clip
     style: Optional[str] = "pill"  # pill/classic/dark/yellow/red/outline/outline_yellow
-    font: Optional[str] = None  # montserrat/anton/serif (hooks.HOOK_FONTS); None = the style's own
+    font: Optional[str] = None  # hooks.HOOK_FONTS key or an installed family name; None = Montserrat
     remove: Optional[bool] = False  # strip the burned hook instead of adding one
 
 @app.post("/api/hook")
@@ -6411,7 +6583,7 @@ async def add_hook(req: HookRequest, request: Request):
         if recap:
             output_filename = os.path.basename(recap)
 
-    output_filename = await _deliver(request, req.job_id, output_filename)
+    output_filename = await _deliver(request, req.job_id, await _with_audio(req.job_id, req.clip_index, output_filename))
 
     # Record the burned hook so the editor knows what the clip carries (the
     # auto-hook pipeline writes the same key).
