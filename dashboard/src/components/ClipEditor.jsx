@@ -95,7 +95,7 @@ function editorReducer(state, action) {
     }
 }
 
-export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, inline = false }) {
+export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, onCreated, inline = false }) {
     const { refreshMe } = useAuth();
     const [edl, setEdl] = useState(null);
     const [loadError, setLoadError] = useState(null);
@@ -889,6 +889,34 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         }
     };
 
+    // A new short from these segments; the clip being edited stays as it is.
+    const [creating, setCreating] = useState(false);
+    const doCreate = async () => {
+        setCreating(true);
+        setRenderError(null);
+        try {
+            const res = await apiFetch('/api/clip/new', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    job_id: jobId,
+                    from_clip: clipIndex,
+                    segments: segments.map((s) => ({ start: s.start, end: s.end })),
+                    framing,
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `could not create the clip (HTTP ${res.status})`);
+            refreshMe();
+            onCreated?.(data);
+        } catch (e) {
+            if (e instanceof QuotaError) openQuotaWall(e, 'clip_editor');
+            setRenderError(e.message || 'could not create the clip');
+        } finally {
+            setCreating(false);
+        }
+    };
+
     // ---- transcript panel data ---------------------------------------------
     // The panel holds the WHOLE source transcript, not a window around the
     // segment: extending a cut means reading what is said before and after it.
@@ -1569,6 +1597,16 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                     : (needsSourcePath ? 're-render from source' : 're-render clip')}
                             </button>
                         </div>
+                        {onCreated && (
+                            <button type="button" className="btn-ghost w-full mt-2 flex items-center justify-center gap-2"
+                                disabled={!canRender || creating || !sourceAvailable} onClick={doCreate}
+                                title={sourceAvailable ? 'render these segments as a new short; this clip stays as it is'
+                                    : 'the source video is gone, so a new clip cannot be cut'}>
+                                {creating
+                                    ? (<><Loader2 size={16} className="animate-spin" /> creating new clip…</>)
+                                    : (<><Plus size={16} /> save as a new clip</>)}
+                            </button>
+                        )}
                         {rendering && (
                             <p className="text-[11px] text-muted mt-2 lowercase">
                                 you can close this editor; the render keeps going and the clip card updates when it finishes

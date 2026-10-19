@@ -5635,6 +5635,81 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class NewClipRequest(BaseModel):
+    job_id: str
+    segments: List[RerenderSegment]
+    # The clip the editor was open on: the new one takes its caption look
+    # and framing.
+    from_clip: Optional[int] = None
+    framing: Optional[str] = None
+
+
+@app.post("/api/clip/new")
+async def create_clip(req: NewClipRequest, request: Request):
+    """A new short from source segments picked in the Trim editor.
+
+    Appends a clip to the project and renders it through the rerender path
+    from the source (a new clip has no canonical file to cut from), so it
+    gets the same reframing, captions and audio layer as any other."""
+    await require_managed_entitlement(request)
+    await _ensure_job_files(req.job_id, request)
+    if req.job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[req.job_id]
+    await _assert_job_owner(request, job)
+    if not _locate_source(req.job_id):
+        raise HTTPException(status_code=409, detail=(
+            "The source video is no longer on the server; a new clip is cut from it."))
+    if not req.segments:
+        raise HTTPException(status_code=400, detail="Pick at least one segment.")
+
+    lock = _rerender_locks.setdefault(req.job_id, asyncio.Lock())
+    async with lock:
+        meta_path, data = _clip_metadata(req.job_id)
+        clips = data.get("shorts") or []
+        template = clips[req.from_clip] if req.from_clip is not None and 0 <= req.from_clip < len(clips) else {}
+        index = len(clips)
+        start = min(s.start for s in req.segments)
+        end = max(s.end for s in req.segments)
+        clip = {
+            "start": start, "end": end,
+            "video_title_for_youtube_short": f"Custom clip {index + 1}",
+            "video_description_for_tiktok": "",
+            "video_description_for_instagram": "",
+            "custom": True,
+            "recipe": {"v": 1, "segments": [{"start": s.start, "end": s.end} for s in req.segments],
+                       "canonical_range": {"start": start, "end": end}},
+        }
+        if template.get("caption_style"):
+            clip["caption_style"] = dict(template["caption_style"])
+        clips.append(clip)
+        data["shorts"] = clips
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        mem_clips = (job.get("result") or {}).get("clips")
+        if isinstance(mem_clips, list) and len(mem_clips) == index:
+            mem_clips.append(dict(clip))
+
+        framing = req.framing or (template.get("recipe") or {}).get("framing") or "auto"
+        try:
+            result = await _rerender_locked(RerenderRequest(
+                job_id=req.job_id, clip_index=index, segments=req.segments,
+                reapply_captions=bool(clip.get("caption_style")) or bool(template), framing=framing),
+                request, job)
+        except Exception:
+            # Leave the project as it was: drop the half-made clip.
+            _, data = _clip_metadata(req.job_id)
+            if len(data.get("shorts") or []) == index + 1:
+                data["shorts"].pop()
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            if isinstance(mem_clips, list) and len(mem_clips) == index + 1:
+                mem_clips.pop()
+            raise
+        _, data = _clip_metadata(req.job_id)
+        return {**result, "clip_index": index, "clip": data["shorts"][index]}
+
+
 # --- Manual framing -----------------------------------------------------------
 #
 # The reframe engine picks the crop automatically, and on a podcast it is right

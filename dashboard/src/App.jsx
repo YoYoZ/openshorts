@@ -2611,6 +2611,11 @@ function App() {
                   clipTitle={clip.video_title_for_youtube_short || ''}
                   onClose={backToClip}
                   onRerendered={handleClipRerendered}
+                  onCreated={(data) => {
+                    setResults((prev) => (prev?.clips ? { ...prev, clips: [...prev.clips, { ...data.clip, video_url: data.new_video_url }] } : prev));
+                    setWsTab('clip');
+                    setFocusIdx(data.clip_index);
+                  }}
                 />
               ) : wsTab === 'audio' ? (
                 <AudioEditor
