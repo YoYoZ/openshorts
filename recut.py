@@ -158,7 +158,13 @@ def virtual_transcript(transcript, segments):
         seg_duration = seg_end - seg_start
         words = []
         for w in transcript_words(transcript):
-            if w["e"] <= seg_start or w["s"] >= seg_end:
+            # A word belongs to the segment its middle falls in: the same rule
+            # as the caption editor and the preview (subtitles._collect_word_blocks).
+            # An overlap test kept a word that merely touched the cut ("треба."
+            # ending exactly where the clip starts) and, clamped to t=0, burned
+            # it at the start of the clip.
+            mid = (w["s"] + w["e"]) / 2
+            if not (seg_start <= mid < seg_end):
                 continue
             words.append({
                 # Leading space = Whisper's word-boundary convention.
