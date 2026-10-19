@@ -1,6 +1,7 @@
-import React, { memo } from 'react';
-import { Check } from 'lucide-react';
+import React, { memo, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 import { ChecksBadge } from './ChecklistModal';
+import { clipCopyBlock } from '../lib/clipCopy';
 
 // One clip in the project list. Deliberately light: no <video>, no player.
 // The one selected clip gets the full ResultCard in the detail pane, so a
@@ -40,6 +41,14 @@ function ClipRow({ clip, index, status, active, selected, checks, onOpen, onTogg
     const st = STATUS[status] || STATUS.todo;
     const score = Number.isFinite(clip?.predicted_score) ? Math.round(clip.predicted_score) : null;
     const scheduledAt = status === 'scheduled' || status === 'published' ? when(clip) : '';
+    const [copied, setCopied] = useState(false);
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(clipCopyBlock(clip, index));
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch { /* clipboard unavailable */ }
+    };
     return (
         <div className={`group flex items-center gap-3 rounded-input border px-2.5 py-2 transition-colors ${active ? 'bg-paper3 border-rule2' : 'border-transparent hover:bg-paper2'}`}>
             {onToggleSelect && (
@@ -75,6 +84,11 @@ function ClipRow({ clip, index, status, active, selected, checks, onOpen, onTogg
                         <span className="text-[10px] text-muted">score</span>
                     </span>
                 )}
+            </button>
+            <button type="button" onClick={copy} aria-label={`copy name and description of clip ${index + 1}`}
+                title="copy #, name and description"
+                className={`p-1.5 shrink-0 rounded-md transition-colors hover:text-brass ${copied ? 'text-ok' : 'text-muted opacity-0 group-hover:opacity-100 focus:opacity-100'}`}>
+                {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
         </div>
     );

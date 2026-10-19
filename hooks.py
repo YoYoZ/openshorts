@@ -268,10 +268,6 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
     draw_shadow = look["shadow"]
     
     # Configuration
-    padding_x = 30 # Balanced padding
-    padding_y = 25 
-    line_spacing = 20 # Increased spacing
-    cornerradius = 20
     shadow_offset = (5, 5) 
     shadow_blur = 10
     
@@ -286,6 +282,12 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
     font_path, size_factor = HOOK_FONTS.get(font or default_font, HOOK_FONTS[default_font])
     base_font_size = int(target_width * size_factor)
     font_size = int(base_font_size * font_scale)
+    # Box padding follows the font size (a fixed 30 px looked cramped once
+    # the text grew); HookOverlay.tsx uses the same ratios for the preview.
+    padding_x = int(font_size * 0.8)
+    padding_y = int(font_size * 0.5)
+    line_spacing = int(font_size * 0.25)
+    cornerradius = int(font_size * 0.35)
     
     try:
         font = ImageFont.truetype(font_path, font_size)
@@ -417,7 +419,7 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
         draw_final.rounded_rectangle(main_box, radius=cornerradius, fill=box_fill)
 
     # 5. Draw Text
-    current_y = 20 + padding_y - 2 # Minor visual adjustment
+    current_y = 20 + padding_y
     for i, line in enumerate(lines):
         if not line:
             current_y += font_size + line_spacing
@@ -431,7 +433,9 @@ def create_hook_image(text, target_width, output_image_path="hook_overlay.png", 
         x = 20 + int(box_width - line_w) // 2
 
         # Draw text in the style's color (emoji runs use the emoji font)
-        _draw_mixed(img, draw_final, (x, current_y), line, font, emoji_font,
+        # Draw at the ink top (bbox[1] is the font's internal leading), so the
+        # padding above the text equals the padding below it.
+        _draw_mixed(img, draw_final, (x, current_y - bbox[1]), line, font, emoji_font,
                     fill=text_fill, outline=outline)
 
         current_y += line_h + line_spacing

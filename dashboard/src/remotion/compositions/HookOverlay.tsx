@@ -196,8 +196,9 @@ const HookBox: React.FC<HookBoxProps> = ({ config, displayFrames }) => {
           transform: `scale(${animScale}) translateY(${animTranslateY}px)`,
           maxWidth: "90%",
           backgroundColor: look.box ?? "transparent",
-          borderRadius: 20,
-          padding: look.box ? `${25 * scale}px ${30 * scale}px` : 0,
+          borderRadius: Math.round(fontSize * 0.35),
+          // Same ratios as hooks.py, so the preview box matches the burned one.
+          padding: look.box ? `${Math.round(fontSize * 0.5)}px ${Math.round(fontSize * 0.8)}px` : 0,
           boxShadow: look.shadow ? "5px 5px 15px rgba(0, 0, 0, 0.25)" : "none",
           textAlign: "center",
         }}

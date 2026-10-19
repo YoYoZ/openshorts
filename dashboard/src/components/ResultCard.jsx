@@ -80,9 +80,30 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [editingMeta, setEditingMeta] = useState(false);
     const [metaBusy, setMetaBusy] = useState(null);   // 'save' | 'rewrite'
     const [metaNote, setMetaNote] = useState(null);
-    useEffect(() => { setTitle(clip.video_title_for_youtube_short || ''); }, [clip.video_title_for_youtube_short]);
-    useEffect(() => { setDesc(clip.video_description_for_tiktok || ''); }, [clip.video_description_for_tiktok]);
-    const saveMeta = async () => {
+    // While editing, the fields are the source of truth: an autosave's own
+    // echo (onClipPatch) must not overwrite what was typed after it left.
+    const editingRef = useRef(false);
+    const savedMeta = useRef({ title: clip.video_title_for_youtube_short || '', desc: clip.video_description_for_tiktok || '' });
+    editingRef.current = editingMeta;
+    useEffect(() => {
+        if (editingRef.current) return;
+        const t = clip.video_title_for_youtube_short || '';
+        savedMeta.current = { ...savedMeta.current, title: t };
+        setTitle(t);
+    }, [clip.video_title_for_youtube_short]);
+    useEffect(() => {
+        if (editingRef.current) return;
+        const d = clip.video_description_for_tiktok || '';
+        savedMeta.current = { ...savedMeta.current, desc: d };
+        setDesc(d);
+    }, [clip.video_description_for_tiktok]);
+    const metaDirty = title !== savedMeta.current.title || desc !== savedMeta.current.desc;
+    const saveMeta = async ({ close = true } = {}) => {
+        if (!metaDirty) {
+            if (close) setEditingMeta(false);
+            return;
+        }
+        const sent = { title, desc };
         setMetaBusy('save');
         try {
             const res = await apiFetch(`/api/clip/${jobId}/${index}/meta`, {
@@ -90,9 +111,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 body: JSON.stringify({ title, description: desc }),
             });
             if (!res.ok) throw new Error(await res.text());
-            onClipPatch?.(index, { video_title_for_youtube_short: title, video_description_for_tiktok: desc });
-            setEditingMeta(false);
-            setMetaNote(null);
+            savedMeta.current = sent;
+            onClipPatch?.(index, { video_title_for_youtube_short: sent.title, video_description_for_tiktok: sent.desc });
+            if (close) setEditingMeta(false);
+            if (close) setMetaNote(null);
         } catch (e) {
             setMetaNote(`could not save: ${e.message}`);
         } finally {
@@ -111,13 +133,21 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             setTitle(body.title);
             setDesc(body.description);
             setEditingMeta(true);
-            setMetaNote(`rewritten by ${body.model} ($${body.cost}); save to keep`);
+            setMetaNote(`rewritten by ${body.model} ($${body.cost})`);
         } catch (e) {
             setMetaNote(`rewrite failed: ${e.message}`);
         } finally {
             setMetaBusy(null);
         }
     };
+
+    // Autosave: a pause in typing saves the title and description.
+    useEffect(() => {
+        if (!editingMeta || !metaDirty || metaBusy) return undefined;
+        const t = setTimeout(() => saveMeta({ close: false }), 900);
+        return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editingMeta, title, desc, metaBusy]);
 
     // Preview helpers: Shorts safe-zone overlay, and before/after against the
     // version this card showed before its last render (this session).
@@ -1005,15 +1035,15 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     {editingMeta ? (
                         <div className="space-y-2 mb-2">
                             <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100}
-                                className="input-field text-sm font-medium" placeholder="title" />
+                                onKeyDown={(e) => { if (e.key === 'Enter') saveMeta(); }}
+                                autoFocus className="input-field text-sm font-medium" placeholder="title" />
                             <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={focus ? 5 : 3}
                                 className="input-field text-xs" placeholder="description (with hashtags)" />
                             <div className="flex items-center gap-2">
-                                <button type="button" onClick={saveMeta} disabled={!!metaBusy} className="btn-primary px-3 py-1.5 text-xs">
-                                    {metaBusy === 'save' ? <Loader2 size={12} className="animate-spin" /> : null} save
+                                <button type="button" onClick={() => saveMeta()} disabled={metaBusy === 'rewrite'} className="btn-primary px-3 py-1.5 text-xs">
+                                    {metaBusy === 'save' ? <Loader2 size={12} className="animate-spin" /> : null} done
                                 </button>
-                                <button type="button" onClick={() => { setEditingMeta(false); setTitle(clip.video_title_for_youtube_short || ''); setDesc(clip.video_description_for_tiktok || ''); setMetaNote(null); }}
-                                    className="text-xs text-muted hover:text-ink2">cancel</button>
+                                <span className="text-[11px] text-muted">{metaBusy === 'save' ? 'saving…' : metaDirty ? 'unsaved' : 'saved automatically'}</span>
                                 <button type="button" onClick={rewriteMeta} disabled={!!metaBusy} className="ml-auto text-xs text-brass hover:underline inline-flex items-center gap-1">
                                     {metaBusy === 'rewrite' ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />} rewrite with AI
                                 </button>

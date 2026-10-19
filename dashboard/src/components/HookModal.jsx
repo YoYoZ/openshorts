@@ -112,9 +112,11 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
     return (
         <Modal inline={inline} isOpen={isOpen} onClose={onClose} size="lg" eyebrow="EDITOR · HOOK" title="edit hook">
             <style>{pillFontFace}</style>
-            <div className="flex flex-col md:flex-row gap-6">
+            {/* Inline (workspace tab): preview | text, style, font | placement,
+                timing, actions, all at full height so nothing scrolls. */}
+            <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className="w-full max-w-[300px] mx-auto md:mx-0 md:w-[300px] shrink-0 self-start flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16]">
+                <div className={`w-full max-w-[300px] mx-auto md:mx-0 shrink-0 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:w-auto md:max-w-[38%]' : 'md:w-[300px] self-start'}`}>
                     {useRemotionPreview ? (
                         <RemotionPreview
                             videoUrl={videoUrl}
@@ -146,16 +148,15 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                     )}
                 </div>
 
-                {/* Right: Controls */}
-                <div className="w-full md:w-80 flex flex-col">
-                    <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
+                {/* Middle: what the hook says and how it looks */}
+                <div className={`w-full flex flex-col space-y-5 ${inline ? 'md:flex-1 md:min-w-[280px] md:h-full md:min-h-0 md:overflow-y-auto custom-scrollbar md:pr-1' : 'md:w-80'}`}>
                         {/* Text Input */}
                         <div>
                             <p className="eyebrow mb-2">Text</p>
                             <textarea
                                 value={text}
                                 onChange={(e) => setText(e.target.value)}
-                                rows={4}
+                                rows={inline ? 3 : 4}
                                 className="input-field resize-none"
                                 placeholder="Enter text that will stop the scroll..."
                             />
@@ -164,7 +165,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                         {/* Style (new) */}
                         <div>
                             <p className="eyebrow mb-2">Style</p>
-                            <div className="grid grid-cols-3 gap-1.5">
+                            <div className={`grid gap-1.5 ${inline ? 'grid-cols-4' : 'grid-cols-3'}`}>
                                 {HOOK_STYLES.map((s) => (
                                     <button
                                         key={s.value}
@@ -212,7 +213,11 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                 ))}
                             </div>
                         </div>
+                </div>
 
+                {/* Right: placement, timing, actions */}
+                <div className={`w-full flex flex-col ${inline ? 'md:w-80 md:shrink-0 md:h-full md:min-h-0' : 'md:w-80'}`}>
+                    <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
                         {/* Position Control */}
                         <div>
                             <p className="eyebrow mb-2">Position</p>

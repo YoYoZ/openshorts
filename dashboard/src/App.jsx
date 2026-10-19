@@ -5,6 +5,7 @@ import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
 import ClipRow from './components/ClipRow';
+import { clipCopyBlock } from './lib/clipCopy';
 import ProcessingAnimation from './components/ProcessingAnimation';
 import JobProgress from './components/JobProgress';
 import RecentProjects from './components/RecentProjects';
@@ -935,6 +936,19 @@ function App() {
       const data = await pollJob(jobId);
       if (data.result) setResults(data.result);
     } catch { /* keep current results */ }
+  };
+
+  // "copy all": every clip as #N / Name / Description, ready to paste.
+  const [copiedAll, setCopiedAll] = useState(false);
+  const copyAllMeta = async () => {
+    const blocks = (results?.clips || [])
+      .map((clip, i) => (clip?.rejected ? null : clipCopyBlock(clip, i)))
+      .filter(Boolean);
+    try {
+      await navigator.clipboard.writeText(blocks.join('\n\n'));
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 1500);
+    } catch { /* clipboard unavailable */ }
   };
 
   const handleDownloadAll = async () => {
@@ -2217,6 +2231,10 @@ function App() {
                       <button type="button" onClick={() => setShowProjectLogs((v) => !v)}
                         className={`btn-ghost px-3 py-1.5 text-xs ${showProjectLogs ? 'border-brass text-ink' : ''}`}>
                         <Terminal size={13} /> logs
+                      </button>
+                      <button type="button" onClick={copyAllMeta} className="btn-ghost px-3 py-1.5 text-xs"
+                        title="Copy #, name and description of every clip (rejected ones left out)">
+                        {copiedAll ? <><Check size={13} className="text-ok" />copied</> : <><Copy size={13} />copy all</>}
                       </button>
                       <button onClick={handleDownloadAll} disabled={downloadingAll} className="btn-ghost px-3 py-1.5 text-xs" title="Download all clips as a ZIP">
                         {downloadingAll ? <><Loader2 size={13} className="animate-spin" />zipping…</> : <><Download size={13} />Download all</>}
