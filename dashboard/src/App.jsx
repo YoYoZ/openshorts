@@ -778,6 +778,23 @@ function App() {
       return next;
     });
     handleClipStateChange(index, { activeLayers: null, serverVideoFile: newFile });
+    if (data.text_changed) refreshClipMeta(index, { save_description: true });
+  };
+
+  // A re-cut moved the words: write a description for what is said now (and,
+  // for a clip made in the Trim tab, a title). Runs after the render so a slow
+  // or rate-limited model never holds it up; failures leave the old text.
+  const refreshClipMeta = async (index, body) => {
+    try {
+      const res = await apiFetch(`/api/clip/${jobId}/${index}/rewrite`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) return;
+      const meta = await res.json();
+      const patch = { video_description_for_tiktok: meta.description, video_description_for_instagram: meta.description };
+      if (body.save_title && meta.title) patch.video_title_for_youtube_short = meta.title;
+      patchClip(index, patch);
+    } catch { /* keep the old text */ }
   };
 
   // Open a job from the sidebar's project list. The status poll loads it:
@@ -2615,6 +2632,7 @@ function App() {
                     setResults((prev) => (prev?.clips ? { ...prev, clips: [...prev.clips, { ...data.clip, video_url: data.new_video_url }] } : prev));
                     setWsTab('clip');
                     setFocusIdx(data.clip_index);
+                    refreshClipMeta(data.clip_index, { save_description: true, save_title: true });
                   }}
                 />
               ) : wsTab === 'audio' ? (

@@ -41,6 +41,7 @@ ANALYSIS_MAX_WIDTH = 640
 # rather than shipping sub-HD. Sources that already exceed it are left alone
 # (never downscale quality the user supplied).
 DELIVERY_MIN_WIDTH = 1080
+DELIVERY_MAX_SIDE = 1920
 
 
 # --- pure helpers (CI-testable) --------------------------------------------
@@ -61,6 +62,11 @@ def delivery_size(orig_w, orig_h, aspect_ratio):
     if out_w < DELIVERY_MIN_WIDTH:
         out_w = DELIVERY_MIN_WIDTH
         out_h = int(round(out_w / aspect_ratio))
+    # A 1440p/2160p source: the long side stops at 1920 (1080x1920 for 9:16),
+    # which is what the platforms deliver anyway.
+    if max(out_w, out_h) > DELIVERY_MAX_SIDE:
+        k = DELIVERY_MAX_SIDE / max(out_w, out_h)
+        out_w, out_h = int(round(out_w * k)), int(round(out_h * k))
 
     return out_w + (out_w % 2), out_h + (out_h % 2)
 
@@ -627,7 +633,7 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
                 graph = (
                     f"[0:v]sendcmd=f='{escape_filter_value(cmd_path)}',"
                     f"crop@c={init},"
-                    f"scale={out_w}:{out_h},setsar=1[v]"
+                    f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[v]"
                 )
 
             inputs, out_label = ["-i", input_video], "[v]"

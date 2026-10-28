@@ -31,7 +31,7 @@ import llm_backend
 from clip_selection import (build_transcript_windows, clip_count_targets,
                             clip_duration_bounds, dedupe_overlapping,
                             score_batches, shortlist_target,
-                            snap_clip_to_words, trim_to_best)
+                            snap_clip_to_words, snap_clip_to_sentences, trim_to_best)
 from ffmpeg_utils import (video_encode_args, audio_encode_args, cut_clip, QUALITY,
                           QUALITY_FAST, METADATA_SCRUB)
 from dotenv import load_dotenv
@@ -528,7 +528,7 @@ def create_general_frame(frame, output_width, output_height):
     # 2. Foreground (Fit Width)
     scale = output_width / orig_w
     fg_h = int(orig_h * scale)
-    foreground = cv2.resize(frame, (output_width, fg_h), interpolation=cv2.INTER_LINEAR)
+    foreground = cv2.resize(frame, (output_width, fg_h), interpolation=cv2.INTER_LANCZOS4)
 
     # A source taller than the output fills the width at a height that does not
     # fit: centre-crop it instead of indexing the frame with a negative offset,
@@ -916,7 +916,15 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             return ('bestvideo[vcodec^=avc1][height<=720][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[vcodec^=avc1][height<=720]+bestaudio/'
                     'best[height<=720][ext=mp4]/best[height<=720]/best')
-        return ('bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
+        # Settings -> Encoding "download up to": a 9:16 crop of a 1080p frame
+        # is 608 px wide and is upscaled 1.78x to 1080x1920; from 1440p it is
+        # 810 px (1.33x), from 2160p it needs no upscale. Above 1080p YouTube
+        # only has VP9/AV1, so those codecs are allowed there (AV1 is skipped:
+        # OpenCV builds often cannot decode it). H.264 1080p stays the fallback.
+        top = int(os.environ.get("SOURCE_MAX_HEIGHT", "1080") or 1080)
+        hi = (f'bestvideo[height<={top}][height>1080][vcodec!^=av01]+bestaudio[ext=m4a]/'
+              if top > 1080 else '')
+        return (hi + 'bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
                 'bestvideo[vcodec^=avc1][height<=1080]+bestaudio/'
                 'best[height<=1080][ext=mp4]/best[ext=mp4]/best')
 
@@ -1729,9 +1737,9 @@ def process_video_to_vertical(input_video, final_output_video, aspect_ratio=ASPE
                 # Crop
                 if y2 > y1 and x2 > x1:
                     cropped = frame[y1:y2, x1:x2]
-                    output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+                    output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LANCZOS4)
                 else:
-                    output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+                    output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LANCZOS4)
 
             t_wr = time.time()
             encoder.stdin.write(output_frame.tobytes())
@@ -2152,14 +2160,16 @@ def get_viral_clips(transcript_result, video_duration):
             shorts = trim_to_best(shorts, max_clips)
             print(f"   Kept the {max_clips} best-scoring clip(s) of "
                   f"{max_clips + dropped}.")
-        # Snap each proposed clip onto real word boundaries (+ a bit of silence).
+        # Snap each proposed clip onto whole sentences, then real word
+        # boundaries (+ a bit of silence): a clip never opens or ends on half
+        # a sentence.
         for s in shorts:
             # Keep the model's raw proposal: it is how boundary accuracy is
             # measured (distance to the nearest word before the snap; p90 was
             # 0.4-0.5 s on 8 talks, 21-sep-2026, so the snap reaches it).
             s["proposed"] = [s.get("start", 0), s.get("end", 0)]
-            ns, ne = snap_clip_to_words(s.get("start", 0), s.get("end", 0), words, video_duration,
-                                        min_duration=min_secs, max_duration=max_secs)
+            ns, ne = snap_clip_to_sentences(s.get("start", 0), s.get("end", 0), words, video_duration,
+                                            min_duration=min_secs, max_duration=max_secs)
             s["start"], s["end"] = ns, ne
         deduped = dedupe_overlapping(shorts)
         if len(deduped) < len(shorts):

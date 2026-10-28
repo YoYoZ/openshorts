@@ -1014,11 +1014,31 @@ def _words_to_source(words, clip):
             for w in words]
 
 
-def _words_for_cut(src_words, segments):
+# Edited words cover the stretch the user edited; a later cut that reaches
+# past it (or into a pause this long inside it) takes the transcript there.
+_EDIT_GAP = 2.0
+
+
+def _words_for_cut(src_words, segments, transcript=None):
     """Source-time caption words -> clip-relative words for a cut; a word is
-    kept when its middle survives the cut."""
+    kept when its middle survives the cut. Speech the edited words never
+    covered (the cut was extended after the edit) comes from ``transcript``,
+    so it is captioned instead of silently left bare."""
+    src_words = sorted(src_words or [], key=lambda w: float(w["start"]))
+    words = list(src_words)
+    if transcript and src_words:
+        starts = [float(w["start"]) for w in src_words]
+        ends = [float(w["end"]) for w in src_words]
+        lo, hi = starts[0], max(ends)
+        gaps = [(ends[i], starts[i + 1]) for i in range(len(src_words) - 1)
+                if starts[i + 1] - ends[i] > _EDIT_GAP]
+        for t in recut.transcript_words(transcript):
+            mid = (t["s"] + t["e"]) / 2
+            if mid < lo or mid > hi or any(g0 < mid < g1 for g0, g1 in gaps):
+                words.append({"word": " " + t["w"], "start": t["s"], "end": t["e"]})
+        words.sort(key=lambda w: float(w["start"]))
     out = []
-    for w in src_words or []:
+    for w in words:
         mid = (float(w["start"]) + float(w["end"])) / 2
         m = recut.source_to_clip(mid, segments)
         if m is None:
@@ -4296,6 +4316,17 @@ async def project_checks(job_id: str):
 
 class RewriteRequest(BaseModel):
     instruction: Optional[str] = None
+    # After a re-cut: write only a new description for the new text, and save it.
+    save_description: bool = False
+    # A new clip: write and save the title too.
+    save_title: bool = False
+
+
+def _spoken_text(data, segs):
+    """What is said inside ``segs`` (source-time segments), in order."""
+    words = [w for s in (data.get("transcript") or {}).get("segments", []) for w in s.get("words", [])]
+    return " ".join(w["word"].strip() for w in words
+                    if recut.source_to_clip((w["start"] + w["end"]) / 2, segs) is not None)
 
 
 @app.post("/api/clip/{job_id}/{clip_index}/rewrite")
@@ -4311,10 +4342,7 @@ async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
     if not (0 <= clip_index < len(clips)):
         raise HTTPException(status_code=404, detail="Clip not found")
     clip = clips[clip_index]
-    segs = _clip_segments(clip)
-    words = [w for s in (data.get("transcript") or {}).get("segments", []) for w in s.get("words", [])]
-    spoken = " ".join(w["word"].strip() for w in words
-                      if recut.source_to_clip((w["start"] + w["end"]) / 2, segs) is not None)[:6000]
+    spoken = _spoken_text(data, _clip_segments(clip))[:6000]
     language = (data.get("transcript") or {}).get("language", "uk")
 
     class Meta(_BM):
@@ -4332,6 +4360,9 @@ async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
         "Write a better title (max 90 characters, a hook that makes people stop, no clickbait lies, "
         "no hashtags) and a description (2-3 short sentences, then 3-5 relevant hashtags).",
         f"Extra instruction from the creator: {req.instruction}" if req.instruction else "",
+        ("The clip was just re-cut, so the old description may describe things no longer in it. "
+         "Keep the title as it is (return it unchanged) and write the description for what is said now.")
+        if req.save_description and not req.save_title else "",
         'Answer as JSON: {"title": "...", "description": "..."}',
     ])
     env = settings_store.child_env({})
@@ -4351,6 +4382,19 @@ async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+    if (req.save_description or req.save_title) and result.get("description"):
+        meta_path, data = _clip_metadata(job_id)
+        target = (data.get("shorts") or [])[clip_index]
+        changes = {"video_description_for_tiktok": result["description"].strip()[:4500],
+                   "video_description_for_instagram": result["description"].strip()[:2200]}
+        if req.save_title and result.get("title"):
+            changes["video_title_for_youtube_short"] = result["title"].strip()[:100]
+        target.update(changes)
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        mem = (jobs.get(job_id) or {}).get("result", {}).get("clips") or []
+        if clip_index < len(mem):
+            mem[clip_index].update(changes)
     return {**result, "model": cost.get("model"), "cost": round(cost.get("total_cost", 0), 5)}
 
 
@@ -5564,6 +5608,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
     try:
         loop = asyncio.get_event_loop()
         _base_name, _clean_recut_name = await loop.run_in_executor(None, run_recut)
+        text_changed = _spoken_text(data, _clip_segments(clip)) != _spoken_text(data, segments)
         new_recipe = {"v": 1, "segments": segments,
                       "canonical_range": canonical_range}
         if framing != 'auto':
@@ -5595,7 +5640,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
             src_words = _words_to_source(clip['caption_words'], clip)
             updates['caption_words_src'] = src_words
         if src_words:
-            updates['caption_words'] = _words_for_cut(src_words, segments) or None
+            updates['caption_words'] = _words_for_cut(src_words, segments, transcript) or None
         clip.update(updates)
         data['shorts'] = clips
         with open(json_files[0], 'w') as f:
@@ -5627,6 +5672,8 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
             "end": new_end,
             "duration": total,
             "render_path": "fast" if fast else "source",
+            # The words changed: the client asks for a new description.
+            "text_changed": text_changed,
         }
     except Exception as e:
         if reservation_id:

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    Bot, KeyRound, Mic, Scissors, Type, Wand2, Youtube, Download, FolderOpen,
+    Bot, KeyRound, Mic, Scissors, Type, Wand2, Youtube, Download, FolderOpen, Film,
     ArrowUp, ArrowDown, Trash2, Plus, Check, AlertTriangle, Loader2, ExternalLink, HardDrive,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
@@ -19,6 +19,7 @@ const SECTIONS = [
     { id: 'subtitles', label: 'subtitles', icon: Type },
     { id: 'hook', label: 'hook', icon: Wand2 },
     { id: 'youtube', label: 'YouTube', icon: Youtube },
+    { id: 'encoding', label: 'video quality', icon: Film },
     { id: 'downloads', label: 'downloads', icon: Download },
     { id: 'storage', label: 'storage', icon: HardDrive },
     { id: 'folders', label: 'folders', icon: FolderOpen, desktopOnly: true },
@@ -595,6 +596,93 @@ function DownloadsSection({ settings, onSaved }) {
 
 const fmtBytes = (b) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(2)} GB` : `${Math.round((b || 0) / 1024 ** 2)} MB`);
 
+// Mirrors ffmpeg_utils.ENCODING_PRESETS.
+const ENCODING_PRESETS = [
+    { id: 'youtube', label: 'YouTube Shorts', crf: 16, speed: 'slow', tune: 'film', max_mbps: 0, audio_kbps: 192,
+      note: 'Most bits: YouTube re-encodes everything and rewards sharp uploads.' },
+    { id: 'tiktok', label: 'TikTok', crf: 18, speed: 'slow', tune: 'film', max_mbps: 15, audio_kbps: 192,
+      note: 'Capped at 15 Mbps: TikTok crushes very large uploads harder.' },
+    { id: 'instagram', label: 'Instagram Reels', crf: 18, speed: 'slow', tune: 'film', max_mbps: 20, audio_kbps: 192,
+      note: 'Capped at 20 Mbps, high profile.' },
+    { id: 'balanced', label: 'Balanced', crf: 18, speed: 'medium', tune: '', max_mbps: 0, audio_kbps: 160,
+      note: 'The old default: good quality, faster renders.' },
+    { id: 'small', label: 'Small & fast', crf: 23, speed: 'veryfast', tune: '', max_mbps: 8, audio_kbps: 128,
+      note: 'Drafts and previews: quick renders, small files.' },
+    { id: 'custom', label: 'Custom', note: 'Set every value yourself.' },
+];
+const SPEEDS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'];
+
+function EncodingSection({ settings, onSaved }) {
+    const s = useSection(settings, 'encoding', onSaved);
+    const d = s.draft || {};
+    const preset = ENCODING_PRESETS.find((p) => p.id === (d.preset || 'youtube')) || ENCODING_PRESETS[0];
+    const custom = preset.id === 'custom';
+    const shown = custom ? d : preset;
+    return (
+        <div className="space-y-5">
+            <p className="text-sm text-muted">
+                How every render is encoded: new clips, trims, captions, hooks. Each clip goes through several
+                encodes and the platform re-encodes it once more, so the presets aim a little above the platforms&apos; own advice.
+            </p>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {ENCODING_PRESETS.map((p) => (
+                    <button key={p.id} type="button"
+                        onClick={() => s.set(p.id === 'custom'
+                            ? { preset: 'custom', crf: shown.crf ?? 18, speed: shown.speed || 'medium', tune: shown.tune ?? '', max_mbps: shown.max_mbps ?? 0, audio_kbps: shown.audio_kbps ?? 160 }
+                            : { preset: p.id })}
+                        className={`text-left rounded-input border p-3 transition-colors ${preset.id === p.id ? 'border-brass bg-brass/5' : 'border-rule2 hover:border-muted'}`}>
+                        <span className="block text-sm text-ink">{p.label}</span>
+                        <span className="block text-[11px] text-muted mt-1 leading-snug">{p.note}</span>
+                        {p.id !== 'custom' && (
+                            <span className="block readout normal-case mt-1.5">crf {p.crf} · {p.speed}{p.max_mbps ? ` · ≤${p.max_mbps} Mbps` : ''} · {p.audio_kbps}k audio</span>
+                        )}
+                    </button>
+                ))}
+            </div>
+            {custom && (
+                <div className="grid grid-cols-2 gap-4">
+                    <Field label="quality (crf)" hint={`${d.crf ?? 18}: lower is better and bigger; 16-20 is visually clean`}>
+                        <input type="range" min={10} max={30} step={1} value={d.crf ?? 18}
+                            onChange={(e) => s.set({ crf: Number(e.target.value) })} className="w-full accent-[color:var(--color-accent)]" />
+                    </Field>
+                    <Field label="speed" hint="slower = better quality at the same size">
+                        <Select value={d.speed || 'medium'} onChange={(v) => s.set({ speed: v })} options={SPEEDS.map((v) => ({ value: v, label: v }))} />
+                    </Field>
+                    <Field label="tune">
+                        <Select value={d.tune ?? ''} onChange={(v) => s.set({ tune: v })} options={[
+                            { value: '', label: 'none' }, { value: 'film', label: 'film (live action)' },
+                            { value: 'animation', label: 'animation' }, { value: 'grain', label: 'grain (keep film grain)' },
+                        ]} />
+                    </Field>
+                    <Field label="bitrate cap" hint="Mbps; 0 = no cap">
+                        <input type="number" min="0" max="100" step="1" value={d.max_mbps ?? 0}
+                            onChange={(e) => s.set({ max_mbps: Number(e.target.value) })} className="input-field" />
+                    </Field>
+                    <Field label="audio bitrate" hint="kbps, AAC">
+                        <Select value={String(d.audio_kbps ?? 160)} onChange={(v) => s.set({ audio_kbps: Number(v) })}
+                            options={[96, 128, 160, 192, 256, 320].map((v) => ({ value: String(v), label: `${v} kbps` }))} />
+                    </Field>
+                </div>
+            )}
+            <div className="grid grid-cols-2 gap-4">
+                <Field label="encoder" hint="NVENC: NVIDIA GPU, much faster, slightly larger files">
+                    <Select value={d.encoder || 'auto'} onChange={(v) => s.set({ encoder: v })} options={[
+                        { value: 'auto', label: 'auto (GPU when available)' }, { value: 'x264', label: 'CPU (x264)' },
+                        { value: 'nvenc', label: 'NVIDIA GPU (NVENC)' },
+                    ]} />
+                </Field>
+                <Field label="download YouTube up to" hint="the 9:16 crop of a 1080p video is upscaled 1.8x; 1440p+ stays sharp">
+                    <Select value={String(d.source_max_height || 1440)} onChange={(v) => s.set({ source_max_height: Number(v) })} options={[
+                        { value: '1080', label: '1080p (fastest)' }, { value: '1440', label: '1440p (sharper crops)' },
+                        { value: '2160', label: '2160p / 4K (sharpest, slow)' },
+                    ]} />
+                </Field>
+            </div>
+            <SaveBar dirty={s.dirty} saving={s.saving} onSave={() => s.save()} onReset={s.reset} status={s.status} />
+        </div>
+    );
+}
+
 function StorageSection({ settings, onSaved }) {
     const s = useSection(settings, 'storage', onSaved);
     const d = s.draft || {};
@@ -807,6 +895,7 @@ export default function SettingsPage() {
                             {section === 'hook' && <HookSection {...props} />}
                             {section === 'youtube' && <YouTubeSection {...props} />}
                             {section === 'downloads' && <DownloadsSection {...props} />}
+                            {section === 'encoding' && <EncodingSection {...props} />}
                             {section === 'storage' && <StorageSection {...props} />}
                             {section === 'folders' && <FolderSettings />}
                         </div>

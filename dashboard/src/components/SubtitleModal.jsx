@@ -220,6 +220,11 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     // kept per clip in localStorage and win over the server copy on reopen.
     const draftKey = `subtitle-draft:${jobId}:${clipIndex}`;
     const hydrated = useRef(false);
+    // A draft belongs to one cut of the clip (fingerprint of its transcript
+    // words) and exists only while it differs from what was loaded: a draft
+    // saved on open used to bring an old cut's words back after a re-cut.
+    const draftFp = useRef(null);
+    const baseline = useRef(null);
     const currentStyle = () => ({
         position, font_size: fontSize, font_name: fontName, font_color: fontColor,
         highlight_color: highlightColor, border_color: borderColor, border_width: borderWidth,
@@ -233,6 +238,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     useEffect(() => {
         if (!isOpen || !jobId || clipIndex === undefined) { hydrated.current = false; return; }
         hydrated.current = false;
+        baseline.current = null;
 
         setCaptionsLoading(true);
         // The clip's transcript, and the default look from Settings, together.
@@ -245,6 +251,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                     // Edited words last applied to this clip win; alignment of
                     // further edits still runs against the transcript timings.
                     const shown = data.editedCaptions || data.captions;
+                    const first = data.captions[0], last = data.captions[data.captions.length - 1];
+                    draftFp.current = `${data.captions.length}:${first.start}:${last.end}:${data.durationSec || ''}`;
                     setCaptions(shown);
                     setOriginalCaptions(data.captions);
                     setEditableText(shown.map(c => c.text).join(' '));
@@ -256,7 +264,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                     try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch { draft = null; }
                     // v2: drafts saved before word timings were repaired carry
                     // out-of-order / overlapping times; let them go.
-                    if (draft && draft.v === 2) {
+                    if (draft && draft.v === 3 && draft.fp === draftFp.current) {
+                        baseline.current = '';   // a restored draft stays until applied
                         if (draft.captions?.length) setCaptions(draft.captions);
                         if (typeof draft.text === 'string') setEditableText(draft.text);
                         if (draft.style) restoreStyle(draft.style);
@@ -276,8 +285,11 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     // so the defaults never overwrite a saved draft).
     useEffect(() => {
         if (!isOpen || !hydrated.current) return;
+        const snap = JSON.stringify({ text: editableText, style: currentStyle() });
+        if (baseline.current === null) { baseline.current = snap; return; }
         try {
-            localStorage.setItem(draftKey, JSON.stringify({ v: 2, text: editableText, captions, style: currentStyle() }));
+            if (snap === baseline.current) localStorage.removeItem(draftKey);
+            else localStorage.setItem(draftKey, JSON.stringify({ v: 3, fp: draftFp.current, text: editableText, captions, style: currentStyle() }));
         } catch { /* storage full or off: the editor still works */ }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, editableText, captions, position, fontSize, fontName, fontColor, highlightColor,

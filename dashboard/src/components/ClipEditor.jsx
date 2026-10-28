@@ -14,6 +14,22 @@ import { useAuth } from '../contexts/AuthContext';
 
 const MIN_SEGMENT_SECONDS = 0.5;
 const SNAP_WINDOW_SECONDS = 0.35;
+// Sentence boundaries pull a dragged edge from further away than words do,
+// so a cut lands on a whole sentence unless it is placed deliberately
+// mid-sentence. Same rules as clip_selection.sentence_bounds.
+const SENTENCE_SNAP_SECONDS = 1.2;
+const SENTENCE_REACH_SECONDS = 6;
+const SENTENCE_PAUSE = 0.8;
+const SENTENCE_END_RE = /[.!?…]+["'»”)\]]*$/;
+function sentenceBounds(words) {
+    const starts = [], ends = [];
+    words.forEach((w, i) => {
+        const prev = words[i - 1], next = words[i + 1];
+        if (!prev || SENTENCE_END_RE.test(String(prev.w).trim()) || w.s - prev.e >= SENTENCE_PAUSE) starts.push(w.s);
+        if (!next || SENTENCE_END_RE.test(String(w.w).trim()) || next.s - w.e >= SENTENCE_PAUSE) ends.push(w.e);
+    });
+    return { starts, ends };
+}
 
 // Hiding the source is a working preference, not a per-clip one, so it sticks.
 const HIDE_SOURCE_KEY = 'openshorts_editor_hide_source';
@@ -244,15 +260,36 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         && (framing === 'auto' || sourceAvailable);
 
     // ---- helpers ------------------------------------------------------------
+    const sentences = useMemo(() => sentenceBounds(words), [words]);
     const snapEdge = useCallback((t, kind) => {
         if (!snapToWords || !words.length) return t;
+        const marks = kind === 'start' ? sentences.starts : sentences.ends;
+        let near = null;
+        for (const c of marks) {
+            if (Math.abs(c - t) <= SENTENCE_SNAP_SECONDS && (near === null || Math.abs(c - t) < Math.abs(near - t))) near = c;
+        }
+        if (near !== null) return near;
         let best = null;
         for (const w of words) {
             const c = kind === 'start' ? w.s : w.e;
             if (Math.abs(c - t) <= SNAP_WINDOW_SECONDS && (best === null || Math.abs(c - t) < Math.abs(best - t))) best = c;
         }
         return best ?? t;
-    }, [snapToWords, words]);
+    }, [snapToWords, words, sentences]);
+
+    // Every segment's outer edges onto whole sentences: start back to where
+    // its sentence begins, end on to where it ends (within reach).
+    const snapAllToSentences = () => {
+        const next = segments.map((seg) => {
+            const back = sentences.starts.filter((t) => t <= seg.start + 0.3 && t >= seg.start - SENTENCE_REACH_SECONDS);
+            const fwd = sentences.ends.filter((t) => t >= seg.end - 0.3 && t <= seg.end + SENTENCE_REACH_SECONDS);
+            return clampSeg({
+                start: back.length ? Math.max(...back) : seg.start,
+                end: fwd.length ? Math.min(...fwd) : seg.end,
+            });
+        });
+        dispatch({ type: 'commit', segments: next, select: selected });
+    };
 
     const clampSeg = useCallback((seg) => ({
         start: Math.max(bounds.lo, Math.min(seg.start, seg.end - minSeg)),
@@ -1545,8 +1582,13 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
 
                         {/* toggles */}
                         <div className="space-y-2.5">
+                            <button type="button" onClick={snapAllToSentences} disabled={!words.length}
+                                className="btn-ghost w-full py-1.5 text-xs lowercase"
+                                title="move every segment's start to where its sentence begins and its end to where it ends">
+                                snap segments to whole sentences
+                            </button>
                             <label className="flex items-center justify-between cursor-pointer">
-                                <span className="text-xs lowercase text-ink2">snap cuts to words</span>
+                                <span className="text-xs lowercase text-ink2">snap cuts to sentences, then words</span>
                                 <span className="relative inline-flex items-center">
                                     <input type="checkbox" checked={snapToWords} onChange={(e) => setSnapToWords(e.target.checked)} className="sr-only peer" />
                                     <span className="w-8 h-4 rounded-full bg-paper3 peer-checked:bg-brass transition-colors after:content-[''] after:absolute after:left-0.5 after:top-0.5 after:w-3 after:h-3 after:rounded-full after:bg-ink after:transition-transform peer-checked:after:translate-x-4" />

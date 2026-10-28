@@ -140,7 +140,7 @@ def mark_ai_generated(path, detail=""):
 
 def audio_encode_args():
     """AAC encode args for a delivered clip, with loudness normalisation."""
-    args = ["-c:a", "aac"]
+    args = ["-c:a", "aac", "-b:a", f"{encoding_profile()['audio_kbps']}k"]
     if os.environ.get("AUDIO_NORMALIZE", "1").strip() != "0":
         args = ["-af", LOUDNORM_FILTER] + args
     return args
@@ -188,13 +188,92 @@ def reset_encoder_cache():
         _announced = False
 
 
+# Encoding presets (Settings -> Encoding). Every clip goes through 2-4 encode
+# generations (reframe segments, hook, captions), so the platform presets sit
+# a little above what the platforms recommend for a single upload: each
+# platform re-encodes again, and loss compounds. crf is x264's; NVENC gets
+# cq = crf + 7 (same size ballpark, see _NVENC_ARGS). max_mbps caps the peak
+# rate where a platform rejects or crushes very high bitrates.
+ENCODING_PRESETS = {
+    # YouTube re-encodes everything and gives better VP9/AV1 to sharper
+    # uploads: spend bits.
+    "youtube":   {"crf": 16, "speed": "slow",     "tune": "film", "max_mbps": 0,  "audio_kbps": 192},
+    # TikTok recompresses hard above ~10-15 Mbps; a capped clean encode wins.
+    "tiktok":    {"crf": 18, "speed": "slow",     "tune": "film", "max_mbps": 15, "audio_kbps": 192},
+    # Reels: high profile, ~ 10-25 Mbps accepted; cap to avoid the heavy
+    # re-squeeze of very large uploads.
+    "instagram": {"crf": 18, "speed": "slow",     "tune": "film", "max_mbps": 20, "audio_kbps": 192},
+    "balanced":  {"crf": 18, "speed": "medium",   "tune": "",     "max_mbps": 0,  "audio_kbps": 160},
+    "small":     {"crf": 23, "speed": "veryfast", "tune": "",     "max_mbps": 8,  "audio_kbps": 128},
+}
+_SPEEDS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
+_NVENC_PRESET = {"ultrafast": "p1", "superfast": "p2", "veryfast": "p3", "faster": "p3", "fast": "p4",
+                 "medium": "p5", "slow": "p6", "slower": "p7", "veryslow": "p7"}
+_profile_cache = {"mtime": None, "value": None}
+
+
+def encoding_profile():
+    """The active encoding settings: {preset, encoder, crf, speed, tune,
+    max_mbps, audio_kbps}. Read from Settings (cached by file mtime); the
+    historical crf 18 / medium when settings are unavailable."""
+    fallback = {"preset": "balanced", "encoder": os.environ.get("FFMPEG_ENCODER", "x264"),
+                **ENCODING_PRESETS["balanced"]}
+    try:
+        import settings_store
+        path = settings_store.SETTINGS_PATH
+        mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+        if _profile_cache["mtime"] == mtime and _profile_cache["value"]:
+            return _profile_cache["value"]
+        enc = dict(settings_store.load().get("encoding") or {})
+    except Exception:
+        return fallback
+    preset = enc.get("preset") or "youtube"
+    out = {"preset": preset, "encoder": enc.get("encoder") or "auto"}
+    if preset in ENCODING_PRESETS:
+        out.update(ENCODING_PRESETS[preset])
+    else:   # custom
+        out.update({
+            "crf": max(0, min(51, int(enc.get("crf", 18)))),
+            "speed": enc.get("speed") if enc.get("speed") in _SPEEDS else "medium",
+            "tune": enc.get("tune") if enc.get("tune") in ("film", "animation", "grain", "stillimage", "") else "",
+            "max_mbps": max(0.0, float(enc.get("max_mbps") or 0)),
+            "audio_kbps": max(64, min(320, int(enc.get("audio_kbps") or 160))),
+        })
+    _profile_cache.update(mtime=mtime, value=out)
+    return out
+
+
+def _profile_args(tier, use_nvenc, prof):
+    # The fast tier (intermediates and per-segment encodes) runs one speed
+    # step quicker at the same crf; the final passes use the chosen speed.
+    speed = prof["speed"]
+    if tier == QUALITY_FAST:
+        speed = _SPEEDS[max(0, _SPEEDS.index(speed) - 1)]
+    rate = []
+    if prof["max_mbps"]:
+        m = float(prof["max_mbps"])
+        rate = ["-maxrate", f"{m:g}M", "-bufsize", f"{m * 2:g}M"]
+    if use_nvenc:
+        return ["-c:v", "h264_nvenc", "-preset", _NVENC_PRESET[speed], "-tune", "hq",
+                "-rc", "vbr", "-cq", str(min(51, prof["crf"] + 7)), "-b:v", "0",
+                "-spatial-aq", "1", "-temporal-aq", "1", "-bf", "0",
+                "-profile:v", "high", *rate, "-pix_fmt", "yuv420p"]
+    args = ["-c:v", "libx264", "-preset", speed, "-crf", str(prof["crf"]),
+            "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    if prof["tune"]:
+        args += ["-tune", prof["tune"]]
+    return args + rate
+
+
 def video_encode_args(tier=QUALITY):
-    """Return the codec/quality args for one encode, honoring FFMPEG_ENCODER."""
+    """Return the codec/quality args for one encode, honoring Settings ->
+    Encoding (QUALITY / QUALITY_FAST) and the encoder choice."""
     global _announced
     if tier not in _X264_ARGS:
         raise ValueError(f"Unknown encode tier: {tier!r}")
 
-    mode = os.environ.get("FFMPEG_ENCODER", "x264").strip().lower()
+    prof = encoding_profile() if tier in (QUALITY, QUALITY_FAST) else None
+    mode = ((prof or {}).get("encoder") or os.environ.get("FFMPEG_ENCODER", "x264")).strip().lower()
     use_nvenc = False
     if mode in ("nvenc", "auto"):
         use_nvenc = nvenc_available()
@@ -207,6 +286,8 @@ def video_encode_args(tier=QUALITY):
         print(f"🎞️ [Encoder] video encoder: {'h264_nvenc' if use_nvenc else 'libx264'} "
               f"(FFMPEG_ENCODER={mode})")
 
+    if prof:
+        return _profile_args(tier, use_nvenc, prof)
     return list((_NVENC_ARGS if use_nvenc else _X264_ARGS)[tier])
 
 

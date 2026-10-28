@@ -4,6 +4,7 @@ Pure helpers for the Gemini clip-selection pipeline.
 Standard-library only so both main.py and gemini_worker.py can import it and
 the logic stays unit-testable without the heavy video dependencies.
 """
+import re
 
 # USD per 1M tokens (input, output incl. thinking), from ai.google.dev pricing.
 MODEL_PRICES = {
@@ -298,6 +299,58 @@ def dedupe_overlapping(shorts, ratio=0.25):
         if not clash:
             kept.append((idx, clip))
     return [c for _, c in sorted(kept, key=lambda p: p[0])]
+
+
+_SENTENCE_END = re.compile(r"[.!?…]+[\"'»”)\]]*$")
+SENTENCE_PAUSE = 0.8   # a pause this long also ends a sentence (unpunctuated ASR)
+
+
+def sentence_bounds(words):
+    """(starts, ends): times where sentences begin and end, from the
+    transcript's punctuation and long pauses. words: [{'w','s','e'}] sorted."""
+    starts, ends = [], []
+    for i, w in enumerate(words):
+        prev = words[i - 1] if i else None
+        if (prev is None or _SENTENCE_END.search(str(prev.get("w", "")).strip())
+                or float(w["s"]) - float(prev["e"]) >= SENTENCE_PAUSE):
+            starts.append(float(w["s"]))
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        if (nxt is None or _SENTENCE_END.search(str(w.get("w", "")).strip())
+                or float(nxt["s"]) - float(w["e"]) >= SENTENCE_PAUSE):
+            ends.append(float(w["e"]))
+    return starts, ends
+
+
+def snap_clip_to_sentences(start, end, words, video_duration,
+                           min_duration=15.0, max_duration=60.0, window=6.0):
+    """Move a clip's start back to where its sentence begins and its end on to
+    where its sentence ends (within ``window`` s), so a cut never opens or
+    closes on half a sentence. Extending is preferred over cutting in; when
+    the longer clip would break max_duration the nearer boundary inside is
+    used. Then snap_clip_to_words adds the silence padding."""
+    if not words:
+        return snap_clip_to_words(start, end, words, video_duration, min_duration, max_duration)
+    starts, ends = sentence_bounds(words)
+    start, end = float(start), float(end)
+    back = [t for t in starts if start - window <= t <= start + 0.3]
+    fwd = [t for t in starts if start < t <= start + window]
+    new_start = max(back) if back else (min(fwd) if fwd else start)
+    after = [t for t in ends if end - 0.3 <= t <= end + window]
+    before = [t for t in ends if end - window <= t < end]
+    new_end = min(after) if after else (max(before) if before else end)
+    if new_end - new_start > max_duration:
+        # Too long: give up the extension on the side that grew most.
+        alt_end = max(before) if before else end
+        alt_start = min(fwd) if fwd else start
+        if alt_end - new_start <= max_duration and alt_end > new_start:
+            new_end = alt_end
+        elif new_end - alt_start <= max_duration:
+            new_start = alt_start
+        else:
+            new_start, new_end = start, end
+    return snap_clip_to_words(new_start, new_end, words, video_duration,
+                              min_duration=min_duration, max_duration=max_duration,
+                              search_window=0.3)
 
 
 def snap_clip_to_words(start, end, words, video_duration,
