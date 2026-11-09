@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Bot, KeyRound, Mic, Scissors, Type, Wand2, Youtube, Download, FolderOpen, Film,
+    Bot, KeyRound, Mic, Scissors, Type, Wand2, Youtube, Download, Upload, FolderOpen, Film,
     ArrowUp, ArrowDown, Trash2, Plus, Check, AlertTriangle, Loader2, ExternalLink, HardDrive,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
@@ -245,12 +245,70 @@ function KeysSection({ settings, onSaved }) {
         }
     };
 
+    // Move every secret to another computer: provider keys, YouTube cookies
+    // and channels from the server, plus the keys this window keeps itself.
+    const BROWSER_KEYS = ['gemini_key', 'uploadPostKey_v3', 'uploadUserId', 'elevenLabsKey_v1', 'falKey_v1'];
+    const fileRef = useRef(null);
+    const [transfer, setTransfer] = useState(null);
+    const exportKeys = async () => {
+        setTransfer(null);
+        try {
+            const res = await apiFetch('/api/settings/keys/export');
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+            body.browser = {};
+            BROWSER_KEYS.forEach((k) => { const v = localStorage.getItem(k); if (v) body.browser[k] = v; });
+            const url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `autoshortscut-keys-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+            const n = Object.keys(body.providers).length + Object.keys(body.youtube_channels).length + Object.keys(body.browser).length;
+            setTransfer({ ok: true, text: `Exported ${n} keys. The file holds them unencrypted: keep it private and delete it after importing.` });
+        } catch (e) {
+            setTransfer({ ok: false, text: `Export failed: ${e.message}` });
+        }
+    };
+    const importKeys = async (file) => {
+        if (!file) return;
+        setTransfer(null);
+        try {
+            const body = JSON.parse(await file.text());
+            const res = await apiFetch('/api/settings/keys/import', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            const out = await res.json();
+            if (!res.ok) throw new Error(out.detail || `HTTP ${res.status}`);
+            let local = 0;
+            Object.entries(body.browser || {}).forEach(([k, v]) => {
+                if (BROWSER_KEYS.includes(k) && typeof v === 'string') { localStorage.setItem(k, v); local += 1; }
+            });
+            onSaved(out.settings);
+            const i = out.imported;
+            setTransfer({ ok: true, text: `Imported ${i.providers.length + local} keys`
+                + `${i.youtube_channels.length ? `, ${i.youtube_channels.length} YouTube channel(s)` : ''}`
+                + `${i.youtube_cookies ? ', YouTube cookies' : ''}.${local ? ' Restart the app to load the Upload-Post / ElevenLabs keys.' : ''}` });
+        } catch (e) {
+            setTransfer({ ok: false, text: `Import failed: ${e.message}` });
+        } finally {
+            if (fileRef.current) fileRef.current.value = '';
+        }
+    };
+
     return (
         <div>
-            <p className="text-sm text-muted mb-5">
+            <p className="text-sm text-muted mb-4">
                 Stored on this computer only, in the app&apos;s settings file. Groq is also used for transcription;
                 Gemini also powers the automatic layout choice (fill or blur).
             </p>
+            <div className="flex flex-wrap items-center gap-2 mb-5">
+                <button type="button" onClick={exportKeys} className="btn-ghost px-3 py-1.5 text-xs"><Download size={13} /> export all keys</button>
+                <button type="button" onClick={() => fileRef.current?.click()} className="btn-ghost px-3 py-1.5 text-xs"><Upload size={13} /> import keys</button>
+                <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importKeys(e.target.files?.[0])} />
+                <span className="text-[11px] text-muted">API keys, YouTube channels and cookies in one file, for another computer.</span>
+                {transfer && <p className={`basis-full text-xs ${transfer.ok ? 'text-ok' : 'text-danger'}`}>{transfer.text}</p>}
+            </div>
             <div className="space-y-3">
                 {PROVIDER_ORDER.map((name) => {
                     const p = settings.providers[name] || {};

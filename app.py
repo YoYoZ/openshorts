@@ -3865,6 +3865,94 @@ async def put_settings(section: str, request: Request):
     return await get_settings()
 
 
+def _local_only(request: Request):
+    """Endpoints that hand out or take secrets in the clear: the local app
+    only, and only from its own pages. CORS is open on a self-hosted install,
+    so without the Origin check any website open in a browser on this
+    computer could read the keys."""
+    if BILLING_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+    origin = request.headers.get("origin")
+    if origin:
+        from urllib.parse import urlparse
+        if (urlparse(origin).hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+            raise HTTPException(status_code=403, detail="Not allowed from this page")
+
+
+@app.get("/api/settings/keys/export")
+async def export_keys(request: Request):
+    """Every stored secret, in the clear, for moving to another computer:
+    provider keys, the YouTube cookies and the connected YouTube channels."""
+    _local_only(request)
+    import settings_store
+    import youtube_upload
+    data = settings_store.load()
+    providers = {}
+    for name, p in data["providers"].items():
+        entry = {}
+        if p.get("key"):
+            entry["key"] = p["key"]
+        if name == "custom" and p.get("base_url"):
+            entry["base_url"] = p["base_url"]
+        if entry:
+            providers[name] = entry
+    channels = {}
+    for name in youtube_upload.accounts():
+        try:
+            with open(youtube_upload._token_path(name), encoding="utf-8") as f:
+                channels[name] = json.load(f)
+        except (OSError, ValueError):
+            pass
+    return {"app": "autoshortscut", "kind": "keys", "version": 1,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "providers": providers,
+            "youtube_cookies": data["download"].get("youtube_cookies", ""),
+            "youtube_channels": channels}
+
+
+@app.post("/api/settings/keys/import")
+async def import_keys(request: Request):
+    """Take a file made by the export. Only what the file holds is written:
+    keys it does not mention stay as they are."""
+    _local_only(request)
+    import settings_store
+    import youtube_upload
+    body = await request.json()
+    if not isinstance(body, dict) or body.get("kind") != "keys":
+        raise HTTPException(status_code=400, detail="Not a keys file exported from this app")
+    done = {"providers": [], "youtube_channels": [], "youtube_cookies": False}
+    incoming = {}
+    for name, p in (body.get("providers") or {}).items():
+        if name not in settings_store.PROVIDERS or not isinstance(p, dict):
+            continue
+        entry = {}
+        if str(p.get("key") or "").strip():
+            entry["key"] = str(p["key"]).strip()
+        if name == "custom" and p.get("base_url"):
+            entry["base_url"] = str(p["base_url"])
+        if entry:
+            incoming[name] = entry
+            done["providers"].append(name)
+    if incoming:
+        settings_store.save_section("providers", incoming)
+    cookies = body.get("youtube_cookies")
+    if isinstance(cookies, str) and cookies.strip():
+        settings_store.save_section("download", {**settings_store.load()["download"], "youtube_cookies": cookies})
+        done["youtube_cookies"] = True
+    for name, token in (body.get("youtube_channels") or {}).items():
+        if not isinstance(token, dict) or not token.get("refresh_token"):
+            continue
+        safe = "".join(c for c in str(name) if c.isalnum() or c in "-_") or "channel"
+        path = youtube_upload.TOKEN_PATH if safe == "default" else os.path.join(youtube_upload.ACCOUNTS_DIR, f"{safe}.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(token, f, indent=2)
+        done["youtube_channels"].append(safe)
+    youtube_upload._access.clear()
+    youtube_upload._channels.clear()
+    return {"imported": done, "settings": await get_settings()}
+
+
 def _models_headers(provider, key):
     """Anthropic lists models with its own headers; everyone else takes Bearer."""
     if provider == "anthropic":
