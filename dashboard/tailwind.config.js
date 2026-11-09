@@ -10,9 +10,10 @@ export default {
         // Lumen · Night Foundry — values mirror tokens.css (kept literal so
         // Tailwind alpha modifiers like bg-brass/10 compile)
         // Darkroom (redesign canvas): neutral near-black, one warm accent.
-        paper: "rgb(14 15 17 / <alpha-value>)",
-        paper2: "rgb(20 21 24 / <alpha-value>)",
-        paper3: "rgb(30 33 37 / <alpha-value>)",
+        paper: "rgb(10 11 15 / <alpha-value>)",
+        paper2: "rgb(21 23 28 / <alpha-value>)",
+        // translucent white: a glass fill that lifts whatever it sits on
+        paper3: "rgb(255 255 255 / calc(<alpha-value> * 0.08))",
         ink: "rgb(236 237 238 / <alpha-value>)",
         ink2: "rgb(201 205 210 / <alpha-value>)",
         muted: "rgb(142 148 156 / <alpha-value>)",
@@ -52,7 +53,7 @@ export default {
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'fade': 'fadeIn 0.4s var(--ease-out)',
+        'fade': 'fadeIn 0.14s var(--ease-out)',
         // mobile shell: the nav drawer flies in from the edge, sheets rise
         'slide-in-left': 'slideInLeft 0.24s var(--ease-out)',
         'sheet-up': 'sheetUp 0.26s var(--ease-out)',

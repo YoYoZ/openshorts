@@ -12,6 +12,13 @@
     -webkit-text-size-adjust: 100%;
   }
 
+  /* Every scroller gets the same thin, translucent bar (the default Windows
+     one is a grey slab down the side of the glass). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.18) transparent;
+  }
+
   body {
     @apply bg-paper text-ink2 antialiased;
     font-family: var(--font-body);
@@ -50,15 +57,47 @@
 }
 
 @layer components {
-  /* hairline card, lit from within — replaces every glass/surface card */
+  /* The canvas every glass sheet sits on: a deep base with a static wash of
+     colour. Static on purpose: an animated backdrop under backdrop-filter
+     re-blurs every frame. */
+  .app-bg {
+    background-color: var(--color-paper);
+    background-image:
+      radial-gradient(60% 55% at 6% 0%, rgb(245 165 36 / 0.17), transparent 62%),
+      radial-gradient(55% 62% at 100% 6%, rgb(99 102 241 / 0.26), transparent 64%),
+      radial-gradient(62% 58% at 80% 100%, rgb(34 170 214 / 0.17), transparent 62%),
+      radial-gradient(48% 52% at 0% 100%, rgb(190 80 200 / 0.14), transparent 60%);
+  }
+
+  /* A sheet of glass: translucent fill, blurred backdrop, a lit top edge. */
   .card,
   .glass-panel {
-    background:
-      radial-gradient(120% 90% at 50% 0%, var(--color-paper-emit) 0%, transparent 70%),
-      var(--color-paper-2);
-    border: 1px solid var(--color-rule);
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-edge);
     border-radius: var(--radius-card);
+    box-shadow: var(--glass-shine), var(--glass-shadow);
   }
+  /* Glass on glass: no second blur (it only costs frames and muddies the
+     sheet below), a quieter fill and no drop shadow. */
+  .card .card,
+  .card .glass-panel {
+    background: var(--glass-fill-quiet);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  }
+
+  /* Side rail and top bars: the same glass, edge to edge. */
+  .glass-rail,
+  .glass-bar {
+    background: rgb(255 255 255 / 0.035);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+  .glass-rail { box-shadow: inset -1px 0 0 var(--color-rule), inset 0 1px 0 rgb(255 255 255 / 0.06); }
+  .glass-bar { box-shadow: inset 0 -1px 0 var(--color-rule), inset 0 1px 0 rgb(255 255 255 / 0.06); }
 
   .card-hover {
     transition: transform var(--dur-short) var(--ease-out),
@@ -92,42 +131,53 @@
 
   .input-field {
     @apply w-full text-sm text-ink2;
-    background: var(--color-paper);
-    border: 1px solid var(--color-rule-2);
+    /* a well pressed into the glass */
+    background: rgb(0 0 0 / 0.30);
+    border: 1px solid rgb(255 255 255 / 0.10);
     border-radius: var(--radius-input);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.45), 0 1px 0 rgb(255 255 255 / 0.05);
     padding: 0.75rem 1rem;
     outline: none;
-    transition: border-color var(--dur-short) var(--ease-out);
+    transition: border-color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out);
   }
   .input-field::placeholder { color: var(--color-muted); opacity: 0.7; }
-  .input-field:focus { border-color: var(--color-accent); }
+  .input-field:focus {
+    border-color: var(--color-accent);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.45), 0 0 0 3px color-mix(in oklab, var(--color-accent) 22%, transparent);
+  }
+  select.input-field option { background: var(--color-paper-2); color: var(--color-ink); }
 
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium;
-    background: var(--color-accent);
+    background: linear-gradient(180deg, #FFC860 0%, var(--color-accent) 52%, #E08E0B 100%);
     color: var(--color-accent-ink);
     border-radius: 999px;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.55), inset 0 -1px 0 rgb(0 0 0 / 0.18),
+                0 8px 22px -10px rgb(245 165 36 / 0.75);
     transition: filter var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
   }
   .btn-primary:hover { filter: brightness(1.08); }
-  .btn-primary:active { transform: translateY(1px); }
+  .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium text-ink;
-    background: transparent;
-    border: 1px solid var(--color-rule-2);
+    background: rgb(255 255 255 / 0.055);
+    border: 1px solid rgb(255 255 255 / 0.13);
     border-radius: 999px;
-    transition: border-color var(--dur-short) var(--ease-out), background-color var(--dur-short) var(--ease-out);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.10);
+    transition: border-color var(--dur-short) var(--ease-out), background-color var(--dur-short) var(--ease-out),
+                transform var(--dur-short) var(--ease-out);
   }
-  .btn-ghost:hover { border-color: var(--color-accent); }
-  .btn-ghost:active { transform: translateY(1px); }
+  .btn-ghost:hover { background: rgb(255 255 255 / 0.10); border-color: rgb(255 255 255 / 0.26); }
+  .btn-ghost:active { transform: scale(0.98); }
   .btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-quiet {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm text-ink2;
     background: var(--color-paper-3);
     border-radius: 999px;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
     transition: filter var(--dur-short) var(--ease-out);
   }
   .btn-quiet:hover { filter: brightness(1.15); }
@@ -213,7 +263,7 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--color-rule);
+  background: rgb(255 255 255 / 0.28);
 }
 
 /* Custom Animations */

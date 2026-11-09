@@ -49,7 +49,7 @@ export default function Modal({ isOpen, onClose, title, eyebrow, size = 'md', ch
        run taller than a centred dialog whose 4px side margins wasted the only
        width there was. From sm up it is the centred dialog it always was. */
     <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/70 p-0 sm:p-4 animate-fade"
+      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-md p-0 sm:p-4 animate-fade"
       onMouseDown={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}
       role="dialog"
       aria-modal="true"

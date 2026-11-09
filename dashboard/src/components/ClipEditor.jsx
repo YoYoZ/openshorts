@@ -1165,7 +1165,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
 
     return (
         // inline: a tab of the clip workspace (fills it) instead of a full-screen overlay
-        <div className={inline ? 'h-full min-h-0 bg-paper flex flex-col' : 'fixed inset-0 z-[110] bg-paper flex flex-col animate-fade'}>
+        <div className={inline ? 'h-full min-h-0 flex flex-col' : 'fixed inset-0 z-[110] app-bg flex flex-col animate-fade'}>
             {/* header */}
             <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-rule flex items-start justify-between gap-4 shrink-0">
                 <div className="min-w-0">

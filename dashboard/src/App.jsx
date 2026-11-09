@@ -1576,7 +1576,7 @@ function App() {
   // Desktop rail: icon-only from md, labelled from lg. Below md it is gone
   // entirely — an unlabelled 80px rail ate a fifth of a phone screen.
   const Sidebar = () => (
-    <div className="hidden md:flex w-20 lg:w-64 bg-paper2 border-r border-rule flex-col h-full shrink-0 transition-all duration-300">
+    <div className="hidden md:flex w-20 lg:w-64 glass-rail flex-col h-full shrink-0">
       <button type="button" onClick={() => goToTab('dashboard')} className="p-6 flex items-center gap-3 text-left" title="clip generator">
         <div className="w-8 h-8 bg-paper3 rounded-input flex items-center justify-center shrink-0 overflow-hidden border border-rule">
           <img src="/logo-autoshortscut.png" alt="Logo" className="w-full h-full object-cover" />
@@ -1729,13 +1729,13 @@ function App() {
     /* h-dvh where supported: on mobile Safari/Chrome `100vh` is the tallest the
        viewport ever gets, so a h-screen shell hides its own bottom bar behind
        the browser chrome until the user scrolls. */
-    <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] bg-paper overflow-hidden">
+    <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] app-bg overflow-hidden">
       {Sidebar()}
       {navOpen && MobileNavDrawer()}
 
       <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden relative">
         {/* Top Header */}
-        <header className="h-14 border-b border-rule bg-paper flex items-center justify-between gap-2 px-3 sm:px-6 shrink-0 z-10">
+        <header className="h-14 glass-bar flex items-center justify-between gap-2 px-3 sm:px-6 shrink-0 z-10">
           <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             {/* Mobile: the drawer handle, and the section name the icon rail
                 used to carry. Without it a phone has no "where am I". */}
@@ -1835,7 +1835,7 @@ function App() {
 
         {/* Session Recovery Banner */}
         {sessionRecovered && (
-          <div className="mx-3 sm:mx-6 mt-2 px-3.5 sm:px-4 py-3 bg-paper2 border border-rule rounded-card flex items-start justify-between gap-3 animate-fade shrink-0">
+          <div className="mx-3 sm:mx-6 mt-2 px-3.5 sm:px-4 py-3 card flex items-start justify-between gap-3 animate-fade shrink-0">
             <div className="flex items-start sm:items-center gap-2 text-sm text-ink2 flex-wrap min-w-0">
               <RotateCcw size={16} className="text-brass shrink-0 mt-0.5 sm:mt-0" />
               <span className="font-medium">Session recovered</span>
@@ -2578,8 +2578,8 @@ function App() {
         ];
         const backToClip = () => setWsTab('clip');
         return (
-          <div className="fixed inset-0 z-40 bg-paper flex flex-col animate-fade">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 sm:px-4 py-2.5 border-b border-rule shrink-0">
+          <div className="fixed inset-0 z-40 app-bg flex flex-col animate-fade">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 sm:px-4 py-2.5 glass-bar shrink-0">
               <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs" title="back to the clip list (Esc)">
                 <X size={14} /> close
               </button>
@@ -2620,31 +2620,39 @@ function App() {
             </div>
             <div className="flex-1 min-h-0">
               {wsTab === 'trim' ? (
-                <ClipEditor
-                  key={`ws-trim-${focusIdx}`}
-                  inline
-                  jobId={jobId}
-                  clipIndex={focusIdx}
-                  clipTitle={clip.video_title_for_youtube_short || ''}
-                  onClose={backToClip}
-                  onRerendered={handleClipRerendered}
-                  onCreated={(data) => {
-                    setResults((prev) => (prev?.clips ? { ...prev, clips: [...prev.clips, { ...data.clip, video_url: data.new_video_url }] } : prev));
-                    setWsTab('clip');
-                    setFocusIdx(data.clip_index);
-                    refreshClipMeta(data.clip_index, { save_description: true, save_title: true });
-                  }}
-                />
+                <div className="h-full p-3 sm:p-6">
+                  <div className="card h-full overflow-hidden">
+                    <ClipEditor
+                      key={`ws-trim-${focusIdx}`}
+                      inline
+                      jobId={jobId}
+                      clipIndex={focusIdx}
+                      clipTitle={clip.video_title_for_youtube_short || ''}
+                      onClose={backToClip}
+                      onRerendered={handleClipRerendered}
+                      onCreated={(data) => {
+                        setResults((prev) => (prev?.clips ? { ...prev, clips: [...prev.clips, { ...data.clip, video_url: data.new_video_url }] } : prev));
+                        setWsTab('clip');
+                        setFocusIdx(data.clip_index);
+                        refreshClipMeta(data.clip_index, { save_description: true, save_title: true });
+                      }}
+                    />
+                  </div>
+                </div>
               ) : wsTab === 'audio' ? (
-                <AudioEditor
-                  key={`ws-audio-${focusIdx}`}
-                  jobId={jobId}
-                  clipIndex={focusIdx}
-                  onApplied={(body) => {
-                    handleClipRerendered(focusIdx, { new_video_url: body.video_url, start: clip.start, end: clip.end, recipe: clip.recipe });
-                    patchClip(focusIdx, { audio_fx: body.audio_fx });
-                  }}
-                />
+                <div className="h-full p-3 sm:p-6">
+                  <div className="card h-full overflow-hidden">
+                    <AudioEditor
+                      key={`ws-audio-${focusIdx}`}
+                      jobId={jobId}
+                      clipIndex={focusIdx}
+                      onApplied={(body) => {
+                        handleClipRerendered(focusIdx, { new_video_url: body.video_url, start: clip.start, end: clip.end, recipe: clip.recipe });
+                        patchClip(focusIdx, { audio_fx: body.audio_fx });
+                      }}
+                    />
+                  </div>
+                </div>
               ) : wsTab === 'frame' ? (
                 <div className="h-full p-3 sm:p-6">
                   <ReframeEditor

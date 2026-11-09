@@ -6,10 +6,21 @@
 
 :root {
   /* paper */
-  /* Darkroom (redesign): neutral near-black, one warm accent */
-  --color-paper: #0E0F11;
-  --color-paper-2: #141518;
-  --color-paper-3: #1E2125;
+  /* Liquid glass: a deep base lit by a static ambient wash (.app-bg);
+     surfaces are translucent sheets over it (.card, .glass-rail, .glass-bar).
+     paper and paper-2 stay opaque for whatever must cover what is under it
+     (overlays, popovers); paper-3 is a translucent white fill. */
+  --color-paper: #0A0B0F;
+  --color-paper-2: #15171C;
+  --color-paper-3: rgb(255 255 255 / 0.08);
+
+  /* glass */
+  --glass-fill: linear-gradient(180deg, rgb(255 255 255 / 0.075), rgb(255 255 255 / 0.035));
+  --glass-fill-quiet: rgb(255 255 255 / 0.04);
+  --glass-edge: rgb(255 255 255 / 0.10);
+  --glass-shine: inset 0 1px 0 rgb(255 255 255 / 0.13), inset 0 -1px 0 rgb(0 0 0 / 0.22);
+  --glass-shadow: 0 18px 48px -18px rgb(0 0 0 / 0.65);
+  --glass-blur: blur(28px) saturate(165%);
 
   /* ink */
   --color-ink: #ECEDEE;
@@ -17,8 +28,8 @@
   --color-muted: #8E949C;
 
   /* rules */
-  --color-rule: #23262B;
-  --color-rule-2: #2E3238;
+  --color-rule: rgb(255 255 255 / 0.08);
+  --color-rule-2: rgb(255 255 255 / 0.15);
   --rule-blueprint: oklch(96% 0.006 262 / 0.04);
 
   /* accents */
@@ -44,12 +55,14 @@
   --tracking-micro: 0.10em;
 
   /* geometry */
-  --radius-card: 10px;
-  --radius-input: 8px;
+  --radius-card: 18px;
+  --radius-input: 11px;
 
   /* motion */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-short: 220ms;
-  --dur-reveal: 600ms;
+  /* Short on purpose: 220 ms hovers and 400 ms fades on every surface made
+     the whole app read as slow. */
+  --dur-short: 110ms;
+  --dur-reveal: 280ms;
   --dur-pulse: 4s;
 }

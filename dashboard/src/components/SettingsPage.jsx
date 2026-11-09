@@ -31,9 +31,11 @@ const PROVIDER_ORDER = ['anthropic', 'gemini', 'groq', 'openai', 'openrouter', '
 
 const Field = ({ label, hint, children }) => (
     <label className="block">
-        <span className="flex items-baseline justify-between mb-1.5">
-            <span className="text-sm text-ink2 lowercase">{label}</span>
-            {hint && <span className="readout normal-case">{hint}</span>}
+        <span className="flex items-baseline justify-between gap-2 mb-1.5">
+            <span className="text-sm text-ink2 lowercase whitespace-nowrap">{label}</span>
+            {/* A long hint in a narrow column used to wrap one word per line
+                and push the label out of line with its neighbours. */}
+            {hint && <span className="readout normal-case truncate min-w-0" title={hint}>{hint}</span>}
         </span>
         {children}
     </label>

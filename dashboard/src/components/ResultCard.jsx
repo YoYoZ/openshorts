@@ -915,7 +915,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     }, [command]);
 
     return (
-        <div className={`card overflow-hidden flex flex-col ${stacked ? '' : 'md:flex-row'} group transition-colors animate-fade ${focus ? 'md:h-full' : stacked ? '' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`} style={{ animationDelay: `${focus ? 0 : index * 0.1}s` }}>
+        <div className={`card overflow-hidden flex flex-col ${stacked ? '' : 'md:flex-row'} group transition-colors animate-fade ${focus ? 'md:h-full' : stacked ? '' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`}>
             {/* Left: Video Preview — 9:16 column matching the fixed card height */}
             {/* A full-width 9:16 preview on a phone is ~640px tall on its own,
                 which pushed the title, captions and every action off-screen.
