@@ -25,13 +25,26 @@ def _clean_encoder_state(monkeypatch):
     reset_encoder_cache()
 
 
-def test_default_args_pin_historical_x264_settings():
+def test_default_args_follow_the_default_encoding_preset():
+    # No FFMPEG_ENCODER and untouched settings: x264 with the "youtube"
+    # preset (Settings -> video quality); the fast tier runs one speed step
+    # quicker at the same crf. DELIVERY is not user-tunable.
     assert video_encode_args(QUALITY) == [
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18"]
+        "-c:v", "libx264", "-preset", "slow", "-crf", "16",
+        "-profile:v", "high", "-pix_fmt", "yuv420p", "-tune", "film"]
     assert video_encode_args(QUALITY_FAST) == [
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18"]
+        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+        "-profile:v", "high", "-pix_fmt", "yuv420p", "-tune", "film"]
     assert video_encode_args(DELIVERY) == [
         "-c:v", "libx264", "-preset", "fast", "-crf", "22"]
+
+
+def test_nvenc_never_asks_for_the_slow_presets_by_default(monkeypatch):
+    # Above p4 NVENC costs ~75% more time for no measurable quality.
+    monkeypatch.setenv("FFMPEG_ENCODER", "nvenc")
+    monkeypatch.setattr(ffmpeg_utils, "_probe_nvenc", lambda: True)
+    args = video_encode_args(QUALITY)
+    assert args[args.index("-preset") + 1] == "p4"
 
 
 def test_unknown_tier_raises():

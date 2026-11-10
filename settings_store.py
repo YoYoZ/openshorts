@@ -87,7 +87,7 @@ DEFAULTS = {
     # Video/audio encoding of every render (ffmpeg_utils.encoding_profile).
     # preset: youtube | tiktok | instagram | balanced | small | custom; the
     # other fields only apply to "custom".
-    "encoding": {"preset": "youtube", "encoder": "auto", "crf": 17, "speed": "slow",
+    "encoding": {"preset": "youtube", "encoder": "", "crf": 17, "speed": "slow",
                  "tune": "film", "max_mbps": 0, "audio_kbps": 192,
                  "source_max_height": 1440},
     # Disk housekeeping (render_gc.py and app.cleanup_jobs). Deleting whole

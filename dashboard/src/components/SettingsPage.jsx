@@ -726,8 +726,8 @@ function EncodingSection({ settings, onSaved }) {
             )}
             <div className="grid grid-cols-2 gap-4">
                 <Field label="encoder" hint="NVENC: NVIDIA GPU, much faster, slightly larger files">
-                    <Select value={d.encoder || 'auto'} onChange={(v) => s.set({ encoder: v })} options={[
-                        { value: 'auto', label: 'auto (GPU when available)' }, { value: 'x264', label: 'CPU (x264)' },
+                    <Select value={d.encoder === 'x264' || d.encoder === 'nvenc' ? d.encoder : ''} onChange={(v) => s.set({ encoder: v })} options={[
+                        { value: '', label: 'auto (GPU when available)' }, { value: 'x264', label: 'CPU (x264)' },
                         { value: 'nvenc', label: 'NVIDIA GPU (NVENC)' },
                     ]} />
                 </Field>

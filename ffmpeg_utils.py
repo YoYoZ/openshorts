@@ -234,7 +234,7 @@ def encoding_profile():
     except Exception:
         return fallback
     preset = enc.get("preset") or "youtube"
-    out = {"preset": preset, "encoder": enc.get("encoder") or "auto"}
+    out = {"preset": preset, "encoder": enc.get("encoder") if enc.get("encoder") in ("x264", "nvenc") else ""}
     if preset in ENCODING_PRESETS:
         out.update(ENCODING_PRESETS[preset])
     else:   # custom
@@ -279,6 +279,9 @@ def video_encode_args(tier=QUALITY):
         raise ValueError(f"Unknown encode tier: {tier!r}")
 
     prof = encoding_profile() if tier in (QUALITY, QUALITY_FAST) else None
+    # Settings name an encoder only when the user picked one; otherwise the
+    # FFMPEG_ENCODER environment decides, as it always did (the desktop app
+    # sets it to auto).
     mode = ((prof or {}).get("encoder") or os.environ.get("FFMPEG_ENCODER", "x264")).strip().lower()
     use_nvenc = False
     if mode in ("nvenc", "auto"):
