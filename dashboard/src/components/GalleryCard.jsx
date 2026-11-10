@@ -110,7 +110,7 @@ export default function GalleryCard({ clip }) {
 
                 <div className="space-y-2 flex-1 overflow-y-auto custom-scrollbar max-h-[150px] pr-1 mb-3">
                     {/* YouTube Title */}
-                    <div className="bg-paper rounded-input p-2 relative group/item">
+                    <div className="bg-black/25 rounded-input p-2 relative group/item">
                         <p className="eyebrow mb-1">YouTube Title</p>
                         <p className="text-xs text-ink2 select-all line-clamp-2 hover:line-clamp-none transition-all">{clip.title}</p>
                         <button
@@ -123,7 +123,7 @@ export default function GalleryCard({ clip }) {
                     </div>
 
                     {/* TikTok / IG Caption */}
-                    <div className="bg-paper rounded-input p-2 relative group/item">
+                    <div className="bg-black/25 rounded-input p-2 relative group/item">
                         <p className="eyebrow mb-1">TikTok · IG Caption</p>
                         <p className="text-xs text-ink2 select-all line-clamp-3 hover:line-clamp-none transition-all cursor-pointer">
                             {clip.tiktok_desc || clip.insta_desc}

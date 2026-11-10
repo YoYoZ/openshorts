@@ -1640,11 +1640,11 @@ function App() {
       aria-label="Navigation"
     >
       <div
-        className="absolute inset-0 bg-black/60 animate-fade"
+        className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade"
         onClick={() => setNavOpen(false)}
         aria-hidden="true"
       />
-      <div className="relative w-[17rem] max-w-[82vw] h-full bg-paper2 border-r border-rule flex flex-col animate-slide-in-left">
+      <div className="relative w-[17rem] max-w-[82vw] h-full glass-pop rounded-none border-y-0 border-l-0 border-r border-rule flex flex-col animate-slide-in-left">
         <div className="flex items-center justify-between px-5 h-14 border-b border-rule shrink-0">
           <button type="button" className="flex items-center gap-2.5" onClick={() => { setNavOpen(false); goToTab('dashboard'); }}>
             <div className="w-7 h-7 bg-paper3 rounded-input overflow-hidden border border-rule shrink-0">
@@ -1702,7 +1702,7 @@ function App() {
     const tabs = navItems.filter((n) => n.primary);
     const moreActive = !tabs.some((t) => t.id === activeTab);
     return (
-      <nav className="md:hidden shrink-0 border-t border-rule bg-paper2/95 backdrop-blur-sm safe-bottom">
+      <nav className="md:hidden shrink-0 border-t border-rule glass-bar safe-bottom">
         <div className="flex items-stretch">
           {tabs.map((item) => {
             const NavIcon = item.icon;
@@ -1960,7 +1960,7 @@ function App() {
                     </a>
                   </div>
 
-                  <div className="bg-paper border border-rule rounded-card p-4 font-mono text-xs text-ink2 flex items-center justify-between gap-3">
+                  <div className="bg-black/25 border border-rule rounded-card p-4 font-mono text-xs text-ink2 flex items-center justify-between gap-3">
                     <span className="truncate">git clone https://github.com/mutonby/skill-autoshorts</span>
                     <button
                       onClick={() => navigator.clipboard.writeText('git clone https://github.com/mutonby/skill-autoshorts')}
@@ -2192,7 +2192,7 @@ function App() {
 
 
                 {/* Logs Terminal */}
-                <div className={`bg-paper rounded-card border border-rule overflow-hidden flex flex-col transition-all duration-500 ${status === 'complete' ? `min-h-0 opacity-50 hover:opacity-100 ${logsVisible ? 'h-32' : 'h-auto'}` : `flex-1 ${logsVisible ? 'min-h-[160px] sm:min-h-[200px]' : 'min-h-0 flex-none'}`}`}>
+                <div className={`bg-black/25 rounded-card border border-rule overflow-hidden flex flex-col transition-all duration-200 ${status === 'complete' ? `min-h-0 opacity-50 hover:opacity-100 ${logsVisible ? 'h-32' : 'h-auto'}` : `flex-1 ${logsVisible ? 'min-h-[160px] sm:min-h-[200px]' : 'min-h-0 flex-none'}`}`}>
                   <button
                     type="button"
                     onClick={() => setLogsVisible(!logsVisible)}
@@ -2456,8 +2456,11 @@ function App() {
                           index={activeIdx}
                           stacked
                           selected={selectedIdx.has(activeIdx)}
-                          onOpenFocus={status === 'complete' ? (idx) => openWorkspace(idx) : null}
-                          onOpenTab={status === 'complete' ? openWorkspace : null}
+                          // A clip that is already rendered opens in the tabbed
+                          // workspace even while the rest of the job runs; the
+                          // standalone editors were the only way in until the end.
+                          onOpenFocus={status === 'complete' || results.clips[activeIdx].video_url ? (idx) => openWorkspace(idx) : null}
+                          onOpenTab={status === 'complete' || results.clips[activeIdx].video_url ? openWorkspace : null}
                           jobId={jobId}
                           onClipPatch={patchClip}
                           checks={clipChecks[activeIdx] || null}

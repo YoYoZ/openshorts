@@ -43,7 +43,7 @@ export default function SegmentedControl({ options, value, onChange, multi = fal
             className={`${pad} rounded-input border text-xs lowercase flex flex-col items-center justify-center gap-1 transition-colors duration-200
               ${active
                 ? 'border-brass bg-paper3 text-ink'
-                : 'border-rule bg-paper text-muted hover:text-ink2 hover:border-rule2'}
+                : 'border-rule bg-paper3/50 text-muted hover:text-ink2 hover:border-rule2'}
               disabled:opacity-40 disabled:cursor-not-allowed`}
           >
             {opt.icon && <span className={active ? 'text-brass' : 'text-muted'}>{opt.icon}</span>}

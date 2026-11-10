@@ -285,7 +285,7 @@ async function createWindow() {
     await startBackend();
     win.loadURL(appUrl());
   } catch (err) {
-    dialog.showErrorBox('Could not start', `${err.message}\nLog: ${path.join(LOG_DIR, 'backend.log')}`);
+    dialog.showErrorBox('Could not start', `${err.message}\nLogs: ${runtime.SETUP_LOG} and ${path.join(LOG_DIR, 'backend.log')}`);
     app.quit();
   }
 }

@@ -31,7 +31,7 @@ function DragDropZone({ label, accept, onFile, file, onClear, icon }) {
           {file.type?.startsWith('image/') ? (
             <img src={URL.createObjectURL(file)} className="w-12 h-12 rounded-input object-cover" alt="" />
           ) : (
-            <div className="w-12 h-12 rounded-input bg-paper2 border border-rule flex items-center justify-center">
+            <div className="w-12 h-12 rounded-input bg-paper3 border border-rule flex items-center justify-center">
               <Icon size={18} className="text-muted" />
             </div>
           )}

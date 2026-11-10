@@ -100,7 +100,7 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
     return (match && match[2].length === 11) ? match[2] : null;
   };
 
-  const containerClasses = `relative w-full aspect-[2/1] sm:aspect-video rounded-card overflow-hidden bg-black border border-rule2 mb-4 sm:mb-8 group animate-fade transition-all duration-500
+  const containerClasses = `relative w-full aspect-[2/1] sm:aspect-video rounded-card overflow-hidden bg-black border border-rule2 mb-4 sm:mb-8 group animate-fade transition-all duration-200
     ${isComplete && !isSyncedPlaying ? 'grayscale brightness-50' : ''}
     ${isSyncedPlaying ? 'ring-2 ring-brass ring-offset-2 ring-offset-black' : ''}`;
 
@@ -176,7 +176,7 @@ const ProcessingAnimation = ({ media, isComplete, syncedTime, isSyncedPlaying, s
           justify-between + a truncating left pill degrades instead. */}
       {!isSyncedPlaying && (
           <div className="absolute top-2.5 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 z-30 flex items-start justify-between gap-2 pointer-events-none">
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 readout min-w-0 transition-colors duration-500 ${isComplete ? 'text-ok' : 'text-brass animate-pulse'}`}>
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 readout min-w-0 transition-colors duration-200 ${isComplete ? 'text-ok' : 'text-brass animate-pulse'}`}>
               {isComplete
                 ? <CheckCircle size={14} className="shrink-0" />
                 : <Scan size={14} className="shrink-0" />}

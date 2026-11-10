@@ -127,7 +127,7 @@ export default function McpConnectCard({ cloud = true, compact = false }) {
       )}
 
       <div className="relative">
-        <pre className={`font-mono text-ink2 whitespace-pre-wrap break-all rounded-card border border-rule bg-paper p-3 pr-20 text-xs ${compact ? '' : 'leading-relaxed'}`}>
+        <pre className={`font-mono text-ink2 whitespace-pre-wrap break-all rounded-card border border-rule bg-black/25 p-3 pr-20 text-xs ${compact ? '' : 'leading-relaxed'}`}>
           {current.snippet}
         </pre>
         <button onClick={copy} className="btn-ghost absolute top-2 right-2 px-2.5 py-1 text-xs" aria-label="copy">

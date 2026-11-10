@@ -17,7 +17,7 @@ export default function UsageMeter({ onClick }) {
     <button
       onClick={onClick}
       title={plan === 'free' ? 'See paid plans' : 'Manage your plan'}
-      className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-rule2 bg-paper2 hover:bg-paper3 transition-colors"
+      className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-rule2 bg-paper3/50 hover:bg-paper3 transition-colors"
     >
       <Zap size={14} className={low ? 'text-warn' : 'text-brass'} />
       <span className={`readout ${low ? 'text-warn' : ''}`}>{remaining} min</span>

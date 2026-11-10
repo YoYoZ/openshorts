@@ -656,7 +656,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                     <h4 className="eyebrow mb-2">Real User Reviews</h4>
                     <div className="space-y-2">
                       {webResearch.real_reviews.slice(0, 5).map((review, i) => (
-                        <div key={i} className="text-xs bg-paper rounded-input p-2.5 border border-rule">
+                        <div key={i} className="text-xs bg-black/25 rounded-input p-2.5 border border-rule">
                           <p className="text-ink2">&quot;{review.quote}&quot;</p>
                           <div className="flex items-center gap-2 mt-1.5">
                             <span className="text-muted">{review.source}</span>
@@ -843,7 +843,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                             className={`w-full flex items-center gap-3 p-2.5 rounded-input border text-left transition-colors duration-200 ${
                               selectedVoice === v.voice_id
                                 ? 'border-brass bg-paper3'
-                                : 'border-rule bg-paper hover:bg-paper3'
+                                : 'border-rule bg-paper3/50 hover:bg-paper3'
                             }`}
                           >
                             <div className="flex-1 min-w-0">
@@ -1220,7 +1220,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               </div>
 
               {/* Logs Terminal */}
-              <div className="bg-paper rounded-card border border-rule overflow-hidden">
+              <div className="bg-black/25 rounded-card border border-rule overflow-hidden">
                 <div className="px-4 py-2 border-b border-rule flex items-center justify-between">
                   <span className="readout flex items-center gap-2">
                     <Terminal size={12} /> Generation Logs
@@ -1333,7 +1333,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                           {copied === 'caption' ? 'Copied' : 'Copy'}
                         </button>
                       </div>
-                      <p className="text-xs text-ink2 bg-paper border border-rule rounded-input p-2.5">{genResult.script.caption}</p>
+                      <p className="text-xs text-ink2 bg-black/25 border border-rule rounded-input p-2.5">{genResult.script.caption}</p>
                     </div>
                   )}
 

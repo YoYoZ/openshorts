@@ -389,7 +389,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                     ) : (
                         <>
                             <video src={videoUrl} className="w-full h-full object-contain opacity-50" muted playsInline />
-                            <div className={`absolute w-full px-8 text-center transition-all duration-300 pointer-events-none flex flex-col items-center justify-center
+                            <div className={`absolute w-full px-8 text-center transition-all duration-200 pointer-events-none flex flex-col items-center justify-center
                                 ${position === 'top' ? 'top-20' : ''}
                                 ${position === 'middle' ? 'top-0 bottom-0' : ''}
                                 ${position === 'bottom' ? 'bottom-[26%]' : ''}

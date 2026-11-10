@@ -1384,6 +1384,7 @@ def _touch_manifest(job_id, now=None):
         return
     m["heartbeat"] = now if now is not None else time.time()
     m["instance"] = INSTANCE_ID
+    m["pid"] = os.getpid()
     try:
         with open(_manifest_path(job_id), "w") as f:
             json.dump(m, f)
@@ -1396,8 +1397,18 @@ def _manifest_busy_elsewhere(m, now=None):
     with a fresh heartbeat is a job WE were running before a restart of this
     same container (same hostname) — that one must be resumed, not skipped."""
     now = time.time() if now is None else now
-    return (m.get("instance") not in (None, INSTANCE_ID)
-            and now - float(m.get("heartbeat") or 0) < HEARTBEAT_STALE_AFTER)
+    if now - float(m.get("heartbeat") or 0) >= HEARTBEAT_STALE_AFTER:
+        return False
+    if m.get("instance") not in (None, INSTANCE_ID):
+        return True
+    # Same hostname, different live process: two backends on one machine
+    # sharing an output folder (the desktop app plus a dev server). The
+    # hostname alone made each treat the other's running job as its own
+    # interrupted one and render it a second time in parallel (WinError 32
+    # on the shared temp files, 10-nov-2026). A restarted container keeps
+    # PID 1, so a real restart still resumes.
+    pid = m.get("pid")
+    return pid is not None and int(pid) != os.getpid()
 
 
 def _jobs_busy_elsewhere(now=None) -> int:

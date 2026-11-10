@@ -127,7 +127,7 @@ export default function JobProgress({ progress, running, isUpload }) {
     const total = started.length ? now - Math.min(...started) : null;
 
     return (
-        <div className="rounded-card border border-rule bg-paper p-4 space-y-4 mb-4">
+        <div className="rounded-card border border-rule bg-black/25 p-4 space-y-4 mb-4">
             <div className="flex items-center justify-between">
                 <span className="eyebrow">progress</span>
                 {total != null && running && <span className="readout tabular-nums">{fmtSecs(total)} elapsed</span>}

@@ -139,7 +139,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
     return (
         /* Bottom sheet on a phone, centred dialog from sm — same shape as the
            shared Modal so the app has one overlay idiom, not two. */
-        <div className={inline ? 'h-full min-h-0 flex justify-center' : 'fixed inset-0 z-50 bg-black/80 flex items-end sm:items-center justify-center p-0 sm:p-4'}>
+        <div className={inline ? 'h-full min-h-0 flex justify-center' : 'fixed inset-0 z-50 bg-black/55 backdrop-blur-md flex items-end sm:items-center justify-center p-0 sm:p-4'}>
             <div className={inline
                 ? 'card w-full max-w-4xl h-full min-h-0 flex flex-col'
                 : 'card w-full max-w-3xl max-h-[92vh] sm:max-h-[90vh] flex flex-col rounded-b-none sm:rounded-card animate-sheet-up sm:animate-none'}>

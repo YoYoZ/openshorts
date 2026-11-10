@@ -104,16 +104,59 @@ function findBasePython() {
   return null;
 }
 
+// First-launch setup writes everything it runs to this file: the splash only
+// has room for one line, and a failed or slow install needs the whole story.
+const SETUP_LOG = path.join(DATA, 'logs', 'setup.log');
+function setupLog(line) {
+  try {
+    fs.mkdirSync(path.dirname(SETUP_LOG), { recursive: true });
+    fs.appendFileSync(SETUP_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch { /* logging must never stop the install */ }
+}
+
 function run(cmd, args, onLine) {
+  setupLog(`$ ${cmd} ${args.join(' ')}`);
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-    const feed = (buf) => String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => onLine && onLine(l));
+    const feed = (buf) => String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => {
+      if (!/^Progress \d+ of \d+/.test(l)) setupLog(l);   // per-chunk progress would flood the log
+      if (onLine) onLine(l);
+    });
     p.stdout.on('data', feed);
     p.stderr.on('data', feed);
-    p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`))));
+    p.on('error', (e) => { setupLog(`failed to start: ${e.message}`); reject(e); });
+    p.on('exit', (code) => {
+      setupLog(`exit ${code}`);
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited with ${code}. Full log: ${SETUP_LOG}`));
+    });
   });
 }
+
+// pip prints no progress without a terminal, so a 700 MB wheel looked like a
+// hang. "--progress-bar raw" (pip 24.1+, pip is upgraded first) prints
+// "Progress <done> of <total>" lines instead; turn them into MB and percent.
+function pipReporter(onStatus, label) {
+  const started = Date.now();
+  let current = '';
+  let last = 0;
+  return (l) => {
+    const m = /^Progress (\d+) of (\d+)/.exec(l);
+    if (m) {
+      const now = Date.now();
+      if (now - last < 400) return;
+      last = now;
+      const done = Number(m[1]) / 1e6, total = Number(m[2]) / 1e6;
+      const secs = Math.round((now - started) / 1000);
+      onStatus(`${label}: ${current}\n${done.toFixed(0)} of ${total.toFixed(0)} MB (${Math.round((done / total) * 100)}%) · ${secs}s`);
+      return;
+    }
+    const d = /^\s*Downloading (\S+)/.exec(l);
+    if (d) current = d[1].split('/').pop();
+    onStatus(`${label}: ${l.slice(0, 120)}`);
+  };
+}
+const PIP_NET = ['--progress-bar', 'raw', '--retries', '10', '--timeout', '60'];
 
 function hasNvidia() {
   return spawnSync('nvidia-smi', ['-L'], { windowsHide: true }).status === 0;
@@ -134,23 +177,27 @@ async function ensurePython(onStatus) {
     throw new Error('No Python found: this build is missing its bundled Python, and no '
       + 'Python 3.10-3.12 is installed. Reinstall AutoShortsCut, or install Python 3.12.');
   }
-  onStatus('creating the Python environment…');
+  setupLog(`setup started: ${process.platform}, base python ${base.join(' ')}`);
+  const status = (text) => onStatus(`${text}\n\nlog: ${SETUP_LOG}`);
+  status('creating the Python environment…');
   if (!fs.existsSync(pythonPath())) await run(base[0], [...base[1], '-m', 'venv', ENV_DIR]);
   const py = pythonPath();
-  await run(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], (l) => onStatus(`pip: ${l}`));
+  await run(py, ['-m', 'pip', 'install', '--upgrade', 'pip', '--retries', '10', '--timeout', '60'],
+    (l) => status(`pip: ${l.slice(0, 120)}`));
   if (IS_WIN && hasNvidia()) {
-    onStatus('installing PyTorch with CUDA (about 3 GB, one time)…');
-    await run(py, ['-m', 'pip', 'install', 'torch==2.11.0', 'torchvision==0.26.0',
-      '--index-url', 'https://download.pytorch.org/whl/cu128'], (l) => onStatus(`torch: ${l}`));
+    status('installing PyTorch with CUDA (about 3 GB, one time)…');
+    await run(py, ['-m', 'pip', 'install', 'torch==2.11.0', 'torchvision==0.26.0', ...PIP_NET,
+      '--index-url', 'https://download.pytorch.org/whl/cu128'], pipReporter(status, 'PyTorch'));
   }
-  onStatus('installing the processing engine (one time)…');
+  status('installing the processing engine (one time)…');
   const extra = IS_WIN && hasNvidia() ? ['nvidia-cublas-cu12<13', 'nvidia-cudnn-cu12>=9,<10'] : [];
-  await run(py, ['-m', 'pip', 'install', '-r', path.join(SRC, 'requirements.txt'), ...extra],
-    (l) => onStatus(`pip: ${l.slice(0, 120)}`));
+  await run(py, ['-m', 'pip', 'install', '-r', path.join(SRC, 'requirements.txt'), ...extra, ...PIP_NET],
+    pipReporter(status, 'engine'));
   fs.writeFileSync(marker, wanted);
+  setupLog('setup finished');
 }
 
 module.exports = {
-  PACKAGED, SRC, DATA, ENV_FILE, WORK_DIR,
+  PACKAGED, SRC, DATA, ENV_FILE, WORK_DIR, SETUP_LOG,
   pythonPath, loadEnvFile, ensurePython, ffmpegDir,
 };

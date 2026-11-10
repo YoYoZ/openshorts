@@ -19,3 +19,21 @@ import tempfile  # noqa: E402
 _settings_dir = tempfile.mkdtemp(prefix="openshorts-test-settings-")
 os.environ["LOCAL_SETTINGS_PATH"] = os.path.join(_settings_dir, "local_settings.json")
 os.environ["LLM_SPEND_PATH"] = os.path.join(_settings_dir, "llm_spend.json")
+
+# Never read the developer's .env. app.py / main.py / gemini_worker.py all do
+# `from dotenv import load_dotenv; load_dotenv()` at import, which would pull
+# LLM_BASE_URL, LLM_MODEL, AUTO_RETRY_LIMIT, TRANSCRIBE_BACKEND, FFMPEG_ENCODER,
+# GROQ_API_KEY ... into os.environ and change what the suite exercises. Making
+# it a no-op here (conftest runs before any test module imports those) keeps the
+# suite identical to a clean checkout without a .env.
+try:
+    import dotenv  # noqa: E402
+    import dotenv.main  # noqa: E402
+
+    def _no_load_dotenv(*_a, **_k):
+        return False
+
+    dotenv.load_dotenv = _no_load_dotenv
+    dotenv.main.load_dotenv = _no_load_dotenv
+except ImportError:  # minimal CI env without python-dotenv
+    pass

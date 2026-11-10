@@ -69,44 +69,71 @@
       radial-gradient(48% 52% at 0% 100%, rgb(190 80 200 / 0.14), transparent 60%);
   }
 
+  /* Glass surfaces. The fill and the backdrop blur live on a ::before layer,
+     never on the element itself: backdrop-filter (like transform or filter)
+     makes an element the containing block of every position:fixed
+     descendant, so a dialog, editor or workspace opened from inside a card
+     was laid out inside that card instead of over the window (the subtitle
+     editor squeezed into the clip list, 10-nov-2026). On a pseudo-element
+     it traps nothing. position:relative here is overridden by an
+     absolute/fixed utility on the same element (utilities come later). */
+  .card,
+  .glass-panel,
+  .glass-pop,
+  .glass-rail,
+  .glass-bar {
+    position: relative;
+    isolation: isolate;
+  }
+  .card::before,
+  .glass-panel::before,
+  .glass-pop::before,
+  .glass-rail::before,
+  .glass-bar::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+
   /* A sheet of glass: translucent fill, blurred backdrop, a lit top edge. */
   .card,
   .glass-panel {
-    background: var(--glass-fill);
-    -webkit-backdrop-filter: var(--glass-blur);
-    backdrop-filter: var(--glass-blur);
     border: 1px solid var(--glass-edge);
     border-radius: var(--radius-card);
     box-shadow: var(--glass-shine), var(--glass-shadow);
   }
+  .card::before,
+  .glass-panel::before { background: var(--glass-fill); }
   /* Glass on glass: no second blur (it only costs frames and muddies the
      sheet below), a quieter fill and no drop shadow. */
   .card .card,
   .card .glass-panel {
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  }
+  .card .card::before,
+  .card .glass-panel::before {
     background: var(--glass-fill-quiet);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
   }
 
   /* Glass that floats over content (menus, toasts): a denser fill, so text
      stays readable whatever scrolls underneath. */
   .glass-pop {
-    background: rgb(24 26 33 / 0.78);
-    -webkit-backdrop-filter: var(--glass-blur);
-    backdrop-filter: var(--glass-blur);
     border: 1px solid rgb(255 255 255 / 0.13);
     border-radius: var(--radius-input);
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 24px 60px -16px rgb(0 0 0 / 0.8);
   }
+  .glass-pop::before { background: rgb(24 26 33 / 0.78); }
 
   /* Side rail and top bars: the same glass, edge to edge. */
-  .glass-rail,
-  .glass-bar {
-    background: rgb(255 255 255 / 0.035);
-    -webkit-backdrop-filter: var(--glass-blur);
-    backdrop-filter: var(--glass-blur);
-  }
+  .glass-rail::before,
+  .glass-bar::before { background: rgb(255 255 255 / 0.035); }
   .glass-rail { box-shadow: inset -1px 0 0 var(--color-rule), inset 0 1px 0 rgb(255 255 255 / 0.06); }
   .glass-bar { box-shadow: inset 0 -1px 0 var(--color-rule), inset 0 1px 0 rgb(255 255 255 / 0.06); }
 

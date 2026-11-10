@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useReducer, useRef, useCallback, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useReducer, useRef, useCallback, useMemo, useDeferredValue } from 'react';
 import {
     X, Loader2, Plus, Trash2, ChevronUp, ChevronDown, Scissors,
     AlertCircle, Undo2, Redo2, ChevronsRight, ChevronsLeft,
@@ -34,8 +34,14 @@ function sentenceBounds(words) {
 // Hiding the source is a working preference, not a per-clip one, so it sticks.
 const HIDE_SOURCE_KEY = 'openshorts_editor_hide_source';
 
-// Words per memoised transcript slice. See TranscriptChunk for why this exists.
+// Words per transcript chunk: the unit that is memoised, mounted and unmounted.
+// See TranscriptPane / TranscriptChunk for why this exists.
 const CHUNK_WORDS = 50;
+const CHUNK_MAX_WORDS = 140;
+// A chunk counts as "near" when it is within this many px of the scroll box.
+const TRANSCRIPT_OVERSCAN_PX = 400;
+// Height guess for a never-measured chunk, until the first real one is seen.
+const TRANSCRIPT_DEFAULT_CHUNK_PX = 150;
 
 // Segment edges round-trip through 3 decimals, so coverage arithmetic needs a
 // hair of tolerance before it calls a millisecond sliver "not rendered".
@@ -149,7 +155,6 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     const sourceTrackRef = useRef(null);
     const dragRef = useRef(null);
     const [ghost, setGhost] = useState(null); // in-progress new segment on the source track
-    const transcriptRef = useRef(null);
 
     useEffect(() => {
         try { localStorage.setItem(HIDE_SOURCE_KEY, showSource ? '0' : '1'); } catch { /* private mode */ }
@@ -985,36 +990,6 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         selectedWord ? words.findIndex((w) => w.s === selectedWord.s && w.e === selectedWord.e) : -1
     ), [words, selectedWord]);
 
-    const chunks = useMemo(() => {
-        const out = [];
-        for (let i = 0; i < words.length; i += CHUNK_WORDS) {
-            out.push({ offset: i, items: words.slice(i, i + CHUNK_WORDS) });
-        }
-        return out;
-    }, [words]);
-
-    // Direct scrollTop, not scrollIntoView: the latter also scrolls every
-    // ancestor, which would yank the whole column around mid-drag.
-    const scrollTranscriptTo = useCallback((selector) => {
-        const box = transcriptRef.current;
-        if (!box) return;
-        const el = box.querySelector(selector);
-        if (!el) return;
-        box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 2);
-    }, []);
-
-    // Two scrollers, one policy, so they cannot fight: picking a segment jumps
-    // to it, and anything that moves the monitor (playback, a track drag, a
-    // seek) takes over from there. Deliberately NOT keyed on the segment's
-    // start, which changes every frame of a drag.
-    useEffect(() => {
-        scrollTranscriptTo('[data-anchor="1"]');
-    }, [selected, words.length, scrollTranscriptTo]);
-
-    useEffect(() => {
-        scrollTranscriptTo('[data-active="1"]');
-    }, [activeWordIndex, scrollTranscriptTo]);
-
     // Stable identity keeps every untouched chunk out of the re-render.
     const pickWord = useCallback((w) => {
         setSelectedWord((prev) => (prev && prev.s === w.s && prev.e === w.e ? null : w));
@@ -1327,38 +1302,15 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                             {words.length === 0 ? (
                                 <p className="text-xs text-muted lowercase">this job kept no transcript</p>
                             ) : (
-                                <div
-                                    ref={transcriptRef}
-                                    className="relative flex-1 min-h-0 flex flex-wrap content-start gap-x-1 gap-y-1.5 overflow-y-auto custom-scrollbar pr-1"
-                                >
-                                    {chunks.map((c) => {
-                                        const first = c.items[0].s;
-                                        const last = c.items[c.items.length - 1].e;
-                                        // 'none' and 'all' are stable primitives, so only the
-                                        // one or two slices straddling a segment edge repaint
-                                        // while a trim handle is being dragged.
-                                        let lit = 'none';
-                                        if (highlightSeg && !(last <= highlightSeg.start || first >= highlightSeg.end)) {
-                                            lit = (first >= highlightSeg.start && last <= highlightSeg.end)
-                                                ? 'all' : highlightSeg;
-                                        }
-                                        const local = (idx) => (
-                                            idx >= c.offset && idx < c.offset + c.items.length ? idx - c.offset : -1
-                                        );
-                                        return (
-                                            <TranscriptChunk
-                                                key={c.offset}
-                                                items={c.items}
-                                                offset={c.offset}
-                                                lit={lit}
-                                                active={local(activeWordIndex)}
-                                                anchorAt={local(anchorIndex)}
-                                                selectedAt={local(selectedWordIndex)}
-                                                onPick={pickWord}
-                                            />
-                                        );
-                                    })}
-                                </div>
+                                <TranscriptPane
+                                    words={words}
+                                    highlightSeg={highlightSeg}
+                                    activeWordIndex={activeWordIndex}
+                                    anchorIndex={anchorIndex}
+                                    selectedWordIndex={selectedWordIndex}
+                                    selected={selected}
+                                    onPick={pickWord}
+                                />
                             )}
                         </div>
                     </div>
@@ -1662,14 +1614,222 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
 }
 
 
-// One slice of the transcript. Memoised because the whole transcript is on
-// screen: repainting a couple of thousand words costs ~66ms, and the source
-// monitor fires timeupdate about four times a second while it plays. Sliced,
-// a moving playhead repaints ~50 words instead of all of them.
+// The whole source transcript, scrollable, but with only the chunks near the
+// viewport actually mounted. Opening the tab used to create one element per
+// word (thousands; far worse on an hour-long source) in a single long task.
 //
-// It returns a Fragment rather than a wrapper element so the words stay direct
-// children of the scroll box — the flex-wrap layout and the anchor's offsetTop
-// both depend on that.
+// Every chunk always has a wrapper <div>; an off-screen one is an empty div
+// with a height (its measured height once seen, otherwise an average), so the
+// scrollbar and offsetTop stay truthful and every word stays reachable by
+// scrolling. A shared IntersectionObserver (rooted on the scroll box, with an
+// overscan margin) says which wrappers are near; the chunks around the anchor
+// word and the active word are forced mounted so the scroll logic can always
+// find its target. Mounted count: the nearby window (~viewport + 2x400px, a
+// handful of 50-word chunks) + at most 3 anchor chunks + 1 active chunk,
+// independent of transcript length.
+function TranscriptPane({
+    words, highlightSeg, activeWordIndex, anchorIndex, selectedWordIndex, selected, onPick,
+}) {
+    const boxRef = useRef(null);
+    const elsRef = useRef(new Map());     // chunk index -> wrapper element
+    const settleRef = useRef(false);      // re-aim at the anchor if heights are re-estimated
+    const widthRef = useRef(null);
+
+    // Each chunk is a block, so its end is a visible line break: end chunks
+    // on a sentence end (from CHUNK_WORDS words on, at most CHUNK_MAX_WORDS)
+    // so the breaks read as paragraphs instead of cutting sentences in half.
+    const chunks = useMemo(() => {
+        const out = [];
+        let start = 0;
+        for (let i = 0; i < words.length; i += 1) {
+            const len = i - start + 1;
+            const sentenceEnd = SENTENCE_END_RE.test(String(words[i].w).trim());
+            if (i === words.length - 1 || (len >= CHUNK_WORDS && sentenceEnd) || len >= CHUNK_MAX_WORDS) {
+                out.push({ offset: start, items: words.slice(start, i + 1) });
+                start = i + 1;
+            }
+        }
+        return out;
+    }, [words]);
+    // Word index -> chunk index (chunks vary in length now).
+    const chunkOf = useCallback((index) => {
+        if (index < 0 || !chunks.length) return -1;
+        let lo = 0, hi = chunks.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (chunks[mid].offset <= index) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }, [chunks]);
+
+    const anchorChunk = chunkOf(anchorIndex);
+    const activeChunk = chunkOf(activeWordIndex);
+
+    // Chunks the observer currently reports near the viewport. Seeded so the
+    // first paint is not an empty box while the first observation is pending.
+    const [observed, setObserved] = useState(() => new Set(anchorChunk < 0 && activeChunk < 0 ? [0, 1] : []));
+    // Measured wrapper heights by chunk index, and the average used for chunks
+    // never seen. Both reset when the box width changes (lines re-wrap).
+    const [heights, setHeights] = useState({});
+    const [est, setEst] = useState(null);
+
+    useEffect(() => {
+        const box = boxRef.current;
+        if (!box || typeof IntersectionObserver === 'undefined') {
+            // No observer available: fall back to mounting everything.
+            setObserved(new Set(chunks.map((_, i) => i)));
+            return undefined;
+        }
+        const io = new IntersectionObserver((entries) => {
+            setObserved((prev) => {
+                let next = null;
+                for (const e of entries) {
+                    const i = Number(e.target.dataset.chunk);
+                    if (e.isIntersecting === prev.has(i)) continue;
+                    if (!next) next = new Set(prev);
+                    if (e.isIntersecting) next.add(i); else next.delete(i);
+                }
+                return next || prev;
+            });
+        }, { root: box, rootMargin: `${TRANSCRIPT_OVERSCAN_PX}px 0px` });
+        elsRef.current.forEach((el) => io.observe(el));
+        return () => io.disconnect();
+    }, [chunks]);
+
+    // Width change re-wraps every line, so cached heights are stale.
+    useEffect(() => {
+        const box = boxRef.current;
+        if (!box || typeof ResizeObserver === 'undefined') return undefined;
+        const ro = new ResizeObserver(() => {
+            const w = box.clientWidth;
+            if (widthRef.current !== null && w !== widthRef.current) {
+                setHeights({});
+                setEst(null);
+            }
+            widthRef.current = w;
+        });
+        ro.observe(box);
+        return () => ro.disconnect();
+    }, []);
+
+    const isMounted = useCallback((ci) => observed.has(ci)
+        || (anchorChunk >= 0 && Math.abs(ci - anchorChunk) <= 1)
+        || ci === activeChunk, [observed, anchorChunk, activeChunk]);
+
+    // Measure what is mounted so its placeholder keeps the same height after
+    // it unmounts. Declared before the scroll effects so they see fresh sizes.
+    useLayoutEffect(() => {
+        let next = null;
+        let sum = 0;
+        let count = 0;
+        elsRef.current.forEach((el, ci) => {
+            if (!isMounted(ci)) return;
+            const h = el.offsetHeight;
+            if (!h) return;
+            if (ci < chunks.length - 1) { sum += h; count += 1; }
+            if (heights[ci] === undefined || Math.abs(heights[ci] - h) > 0.5) {
+                if (!next) next = { ...heights };
+                next[ci] = h;
+            }
+        });
+        if (next) setHeights(next);
+        if (est === null && count > 0) setEst(sum / count);
+    }, [isMounted, heights, est, chunks.length]);
+
+    // Direct scrollTop, not scrollIntoView: the latter also scrolls every
+    // ancestor, which would yank the whole column around mid-drag.
+    const scrollTo = useCallback((selector) => {
+        const box = boxRef.current;
+        if (!box) return;
+        const el = box.querySelector(selector);
+        if (!el) return;
+        box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 2);
+    }, []);
+
+    // Two scrollers, one policy, so they cannot fight: picking a segment jumps
+    // to it, and anything that moves the monitor (playback, a track drag, a
+    // seek) takes over from there. Deliberately NOT keyed on the segment's
+    // start, which changes every frame of a drag. Layout effects so the jump
+    // lands before paint (no frame of blank placeholders at the top).
+    useLayoutEffect(() => {
+        settleRef.current = true;
+        scrollTo('[data-anchor="1"]');
+    }, [selected, words.length, scrollTo]);
+
+    useLayoutEffect(() => {
+        scrollTo('[data-active="1"]');
+    }, [activeWordIndex, scrollTo]);
+
+    // The first measurement replaces the height guess for unseen chunks, which
+    // moves the anchor: aim again, until the user takes over by scrolling.
+    useLayoutEffect(() => {
+        if (!settleRef.current) return;
+        scrollTo('[data-anchor="1"]');
+        scrollTo('[data-active="1"]');
+    }, [est, scrollTo]);
+
+    const userScrolled = () => { settleRef.current = false; };
+
+    return (
+        <div
+            ref={boxRef}
+            onWheel={userScrolled}
+            onPointerDown={userScrolled}
+            className="relative flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1"
+        >
+            {chunks.map((c, ci) => {
+                const mounted = isMounted(ci);
+                let content = null;
+                if (mounted) {
+                    const first = c.items[0].s;
+                    const last = c.items[c.items.length - 1].e;
+                    // 'none' and 'all' are stable primitives, so only the
+                    // one or two slices straddling a segment edge repaint
+                    // while a trim handle is being dragged.
+                    let lit = 'none';
+                    if (highlightSeg && !(last <= highlightSeg.start || first >= highlightSeg.end)) {
+                        lit = (first >= highlightSeg.start && last <= highlightSeg.end)
+                            ? 'all' : highlightSeg;
+                    }
+                    const local = (idx) => (
+                        idx >= c.offset && idx < c.offset + c.items.length ? idx - c.offset : -1
+                    );
+                    content = (
+                        <TranscriptChunk
+                            items={c.items}
+                            offset={c.offset}
+                            lit={lit}
+                            active={local(activeWordIndex)}
+                            anchorAt={local(anchorIndex)}
+                            selectedAt={local(selectedWordIndex)}
+                            onPick={onPick}
+                        />
+                    );
+                }
+                const placeholderH = heights[ci]
+                    ?? (est ?? TRANSCRIPT_DEFAULT_CHUNK_PX) * (c.items.length / CHUNK_WORDS);
+                return (
+                    <div
+                        key={c.offset}
+                        data-chunk={ci}
+                        ref={(el) => { if (el) elsRef.current.set(ci, el); else elsRef.current.delete(ci); }}
+                        className="flex flex-wrap content-start gap-x-1 gap-y-1.5 pb-1.5"
+                        style={mounted ? undefined : { height: placeholderH }}
+                    >
+                        {content}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+// One slice of the transcript. Memoised because a moving playhead would
+// otherwise repaint every mounted word: the source monitor fires timeupdate
+// about four times a second while it plays. Sliced, it repaints ~50 words.
+//
+// It returns a Fragment: the words are direct children of the chunk wrapper
+// that TranscriptPane renders, whose flex-wrap provides the layout.
 const TranscriptChunk = React.memo(function TranscriptChunk({
     items, offset, lit, active, anchorAt, selectedAt, onPick,
 }) {

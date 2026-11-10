@@ -1076,7 +1076,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             {whyClamped && whyOpen && (
                                 <div
                                     role="tooltip"
-                                    className="absolute left-0 right-0 top-full mt-1 z-20 bg-paper border border-rule rounded-input px-3 py-2 text-xs text-ink leading-snug shadow-lg"
+                                    className="absolute left-0 right-0 top-full mt-1 z-20 glass-pop px-3 py-2 text-xs text-ink leading-snug"
                                 >
                                     {clip.why}
                                 </div>
@@ -1273,7 +1273,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                                 {copied === 'youtube' ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
                             </button>
                         </div>
-                        <p className="text-sm text-ink2 select-all break-words bg-paper rounded-input p-3 border border-rule">
+                        <p className="text-sm text-ink2 select-all break-words bg-black/25 rounded-input p-3 border border-rule">
                             {clip.video_title_for_youtube_short || "Viral Short Video"}
                         </p>
                     </div>
@@ -1289,7 +1289,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                                 {copied === 'caption' ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
                             </button>
                         </div>
-                        <p className="text-sm text-ink2 select-all break-words bg-paper rounded-input p-3 border border-rule whitespace-pre-wrap">
+                        <p className="text-sm text-ink2 select-all break-words bg-black/25 rounded-input p-3 border border-rule whitespace-pre-wrap">
                             {clip.video_description_for_tiktok || clip.video_description_for_instagram}
                         </p>
                     </div>
@@ -1363,7 +1363,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     </div>
 
                     {/* Scheduling */}
-                    <div className="p-3 bg-paper rounded-input border border-rule">
+                    <div className="p-3 bg-paper3/50 rounded-input border border-rule">
                         <label className="flex items-center justify-between cursor-pointer">
                             <span className="flex items-center gap-2 text-sm text-ink2 lowercase">
                                 <Calendar size={16} className={isScheduling ? 'text-brass' : 'text-muted'} /> schedule post

@@ -2,7 +2,7 @@ import { X } from 'lucide-react';
 
 /**
  * The single modal shell for the app (design.md).
- * Plain dark overlay (no backdrop-blur), hairline paper2 panel.
+ * Dimmed, blurred overlay (bg-black/55 + backdrop-blur-md) over a glass .card panel.
  *
  * Props:
  *  - isOpen / onClose
