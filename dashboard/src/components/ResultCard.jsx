@@ -1457,7 +1457,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 isProcessing={isHooking}
                 videoUrl={originalVideoUrl}
                 initialText={clip.viral_hook_text}
-                durationInSeconds={clip.end && clip.start ? clip.end - clip.start : 30}
+                durationInSeconds={(Number(clip.end) || 0) - (Number(clip.start) || 0) || 30}
                 existingSubtitles={activeLayers.subtitles}
                 hasCaptions={!!activeLayers.subtitles || /(^|_)subtitled_/.test(serverVideoFile || '')}
                 serverRender={hasServerBurns}

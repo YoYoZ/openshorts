@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Player } from '@remotion/player';
 import { ShortVideo } from '../remotion/compositions/ShortVideo';
 
@@ -23,7 +23,26 @@ export default function RemotionPreview({
     className = '',
 }) {
     const fps = 30;
-    const durationInFrames = Math.max(1, Math.round(durationInSeconds * fps));
+    // The real length of the file being previewed. The caller's figure comes
+    // from the clip's start/end, which is wrong for a trimmed clip made of
+    // several pieces (start..end spans the gaps) and whenever the metadata and
+    // the render disagree: the preview then ran on past the video's end with
+    // the captions still animating over a frozen last frame.
+    const [measured, setMeasured] = useState(null);
+    useEffect(() => {
+        setMeasured(null);
+        if (!videoUrl) return undefined;
+        const v = document.createElement('video');
+        v.preload = 'metadata';
+        v.muted = true;
+        v.onloadedmetadata = () => {
+            if (Number.isFinite(v.duration) && v.duration > 0) setMeasured(v.duration);
+        };
+        v.src = videoUrl;
+        return () => { v.onloadedmetadata = null; v.removeAttribute('src'); v.load(); };
+    }, [videoUrl]);
+    const seconds = measured ?? durationInSeconds;
+    const durationInFrames = Math.max(1, Math.floor(seconds * fps));
 
     const inputProps = useMemo(
         () => ({
