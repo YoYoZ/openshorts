@@ -171,7 +171,14 @@ function serveStatic(req, res) {
   let file = path.normalize(path.join(DIST, urlPath));
   if (!file.startsWith(DIST)) { res.writeHead(403); return res.end(); }
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, 'index.html');
-  res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
+  // Vite's /assets files carry a content hash in their name: cache them for
+  // good, so a reload or a second window parses from the code cache instead
+  // of re-reading 2 MB of JS. index.html is always revalidated.
+  const immutable = urlPath.startsWith('/assets/') || urlPath.startsWith('/fonts/');
+  res.writeHead(200, {
+    'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+    'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+  });
   fs.createReadStream(file).pipe(res);
 }
 

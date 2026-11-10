@@ -1247,7 +1247,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                         {/* Two steps, shown as two: pick a range on the source, then
                             put it in the clip. Six controls in one undifferentiated
                             row read as six unrelated buttons. */}
-                        <div className="shrink-0 rounded-input border border-rule bg-paper2 p-2 flex items-stretch gap-3">
+                        <div className="shrink-0 rounded-input border border-rule bg-black/25 p-2 flex items-stretch gap-3">
                             <div className="flex items-center gap-1.5 flex-1 min-w-0">
                                 <span className="readout shrink-0 text-muted">1 · MARK</span>
                                 <button onClick={() => markHere('in')} className="btn-quiet text-[11px] py-1 px-2 flex items-center gap-1 shrink-0">

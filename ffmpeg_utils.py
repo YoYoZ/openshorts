@@ -207,8 +207,14 @@ ENCODING_PRESETS = {
     "small":     {"crf": 23, "speed": "veryfast", "tune": "",     "max_mbps": 8,  "audio_kbps": 128},
 }
 _SPEEDS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
+# NVENC presets are not x264's: above p4 the encode gets much slower for
+# almost nothing. Measured on a 1080x1920 clip at the same cq (10-nov-2026):
+# p4 2.4 s, p5 3.9 s, p6 4.2 s for 35 s of video; SSIM against a lossless
+# reference 0.99505 (p4) vs 0.99518 (p6), while one cq step is worth three
+# times that. So medium and slow both mean p4, and only the two slowest
+# speeds ask for more.
 _NVENC_PRESET = {"ultrafast": "p1", "superfast": "p2", "veryfast": "p3", "faster": "p3", "fast": "p4",
-                 "medium": "p5", "slow": "p6", "slower": "p7", "veryslow": "p7"}
+                 "medium": "p4", "slow": "p4", "slower": "p5", "veryslow": "p7"}
 _profile_cache = {"mtime": None, "value": None}
 
 

@@ -104,7 +104,7 @@ export default function StatusDock({ onOpen }) {
     const toastStack = toasts.length > 0 && createPortal(
         <div className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 w-[320px] max-w-[calc(100vw-2rem)]" aria-live="polite">
             {toasts.map((t) => (
-                <div key={t.id} className="card flex items-start gap-3 px-3.5 py-3 shadow-2xl animate-fade">
+                <div key={t.id} className="glass-pop flex items-start gap-3 px-3.5 py-3 animate-fade">
                     {t.ok ? <CheckCircle2 size={16} className="text-ok shrink-0 mt-0.5" /> : <AlertCircle size={16} className="text-danger shrink-0 mt-0.5" />}
                     <button type="button" onClick={() => { if (t.jobId) onOpen?.(t.jobId); dismiss(t.id); }}
                         className="flex-1 min-w-0 text-left">

@@ -50,7 +50,7 @@ function ClipRow({ clip, index, status, active, selected, checks, onOpen, onTogg
         } catch { /* clipboard unavailable */ }
     };
     return (
-        <div className={`group flex items-center gap-3 rounded-input border px-2.5 py-2 transition-colors ${active ? 'bg-paper3 border-rule2' : 'border-transparent hover:bg-paper2'}`}>
+        <div className={`group flex items-center gap-3 rounded-input border px-2.5 py-2 transition-colors ${active ? 'bg-paper3 border-rule2' : 'border-transparent hover:bg-paper3/50'}`}>
             {onToggleSelect && (
                 <button type="button" onClick={() => onToggleSelect(index)} aria-pressed={selected}
                     aria-label={`select clip ${index + 1}`}

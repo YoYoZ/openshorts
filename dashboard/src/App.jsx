@@ -184,7 +184,7 @@ const UserProfileSelector = ({ profiles, selectedUserId, onSelect, onConnect }) 
         aria-label="social profile"
         /* Phone: avatar + chevron only. A 180px pill next to the menu button,
            the section title and the minutes meter overflowed a 360px header. */
-        className="flex items-center justify-between gap-1 bg-paper2 border border-rule2 rounded-input px-2 sm:px-3 py-2 text-sm text-ink2 hover:bg-paper3 transition-colors sm:min-w-[180px]"
+        className="flex items-center justify-between gap-1 bg-paper3/60 border border-rule2 rounded-input px-2 sm:px-3 py-2 text-sm text-ink2 hover:bg-paper3 transition-colors sm:min-w-[180px]"
       >
         <span className="flex items-center gap-2">
           <div className="w-5 h-5 rounded-full bg-paper3 border border-rule flex items-center justify-center font-mono text-micro text-brass shrink-0">
@@ -460,6 +460,17 @@ function App() {
     });
     return c;
   }, [rankedClips]);
+  // The Hook and Subtitles tabs' live preview is a separate ~500 KB chunk:
+  // fetch it while the clip list is on screen, so the first open of those
+  // tabs does not stall on it.
+  const hasClips = !!results?.clips?.length;
+  useEffect(() => {
+    if (!hasClips) return undefined;
+    const warm = () => { import('./components/RemotionPreview').catch(() => {}); };
+    const id = window.requestIdleCallback ? window.requestIdleCallback(warm, { timeout: 4000 }) : setTimeout(warm, 1500);
+    return () => (window.cancelIdleCallback ? window.cancelIdleCallback(id) : clearTimeout(id));
+  }, [hasClips]);
+
   const patchClip = (index, patch) => {
     setResults((prev) => {
       if (!prev?.clips?.[index]) return prev;
@@ -1814,7 +1825,7 @@ function App() {
 
         {/* Persistent Missing Keys Banner — visible on every screen */}
         {keysMissing && activeTab !== 'settings' && (
-          <div className="mx-3 sm:mx-6 mt-3 px-3.5 sm:px-4 py-3 bg-paper2 border border-rule rounded-card flex flex-wrap items-center justify-between gap-2.5 sm:gap-4 shrink-0 animate-fade">
+          <div className="mx-3 sm:mx-6 mt-3 px-3.5 sm:px-4 py-3 card flex flex-wrap items-center justify-between gap-2.5 sm:gap-4 shrink-0 animate-fade">
             <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 text-sm text-ink2 min-w-0 flex-1">
               <KeyRound size={16} className="shrink-0 text-warn mt-0.5 sm:mt-0" />
               <div className="min-w-0">
@@ -1887,7 +1898,7 @@ function App() {
                 </div>
 
                 {/* Mobile-format warning */}
-                <div className="px-4 py-3 rounded-card border border-rule bg-paper2 flex items-start gap-3">
+                <div className="px-4 py-3 card flex items-start gap-3">
                   <Smartphone size={18} className="text-warn shrink-0 mt-0.5" />
                   <div className="text-sm text-ink2">
                     <p className="font-medium text-ink mb-1">Upload videos already in vertical (9:16) mobile format.</p>
@@ -2186,7 +2197,7 @@ function App() {
                     type="button"
                     onClick={() => setLogsVisible(!logsVisible)}
                     aria-expanded={logsVisible}
-                    className="w-full px-3.5 sm:px-4 py-2.5 border-b border-rule flex items-center justify-between gap-2 bg-paper2 shrink-0 text-left"
+                    className="w-full px-3.5 sm:px-4 py-2.5 border-b border-rule flex items-center justify-between gap-2 bg-paper3/50 shrink-0 text-left"
                   >
                     <span className="readout flex items-center gap-2">
                       <Terminal size={12} /> System Logs

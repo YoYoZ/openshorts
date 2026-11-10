@@ -1093,7 +1093,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
                 {/* Descriptions (compact) — full text lives in the modal */}
                 <div className="flex-1 min-h-0 space-y-2 mb-4">
-                    <div className="bg-paper rounded-input px-3 py-2 border border-rule flex items-center gap-2 min-w-0 overflow-hidden">
+                    <div className="bg-black/25 rounded-input px-3 py-2 border border-rule flex items-center gap-2 min-w-0 overflow-hidden">
                         <span className="eyebrow shrink-0">YOUTUBE</span>
                         <p className="text-xs text-ink2 truncate flex-1 min-w-0">
                             {clip.video_title_for_youtube_short || "Viral Short Video"}
@@ -1107,9 +1107,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         </button>
                     </div>
 
-                    <div className="bg-paper rounded-input px-3 py-2 border border-rule flex items-center gap-2 min-w-0 overflow-hidden">
-                        <span className="eyebrow shrink-0">TIKTOK · IG</span>
-                        <p className="text-xs text-ink2 truncate flex-1 min-w-0">
+                    {/* In the workspace there is a whole column of room: show the
+                        description in full instead of one clipped line. */}
+                    <div className={`bg-black/25 rounded-input px-3 py-2 border border-rule flex gap-2 min-w-0 overflow-hidden ${focus ? 'items-start' : 'items-center'}`}>
+                        <span className={`eyebrow shrink-0 ${focus ? 'mt-0.5' : ''}`}>{focus ? 'DESCRIPTION' : 'TIKTOK · IG'}</span>
+                        <p className={`text-ink2 flex-1 min-w-0 ${focus ? 'text-sm leading-relaxed whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto' : 'text-xs truncate'}`}>
                             {clip.video_description_for_tiktok || clip.video_description_for_instagram}
                         </p>
                         <button

@@ -50,7 +50,7 @@ export function FontPicker({ value, onChange, needsCyrillic = false }) {
                 </span>
             </button>
             {open && (
-                <div className="absolute z-30 mt-1 w-full rounded-input border border-rule2 bg-paper2 shadow-2xl">
+                <div className="absolute z-30 mt-1 w-full glass-pop">
                     <div className="p-2 border-b border-rule flex items-center gap-2">
                         <Search size={14} className="text-muted shrink-0" />
                         <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)}

@@ -945,8 +945,37 @@ def _unmark_local_job(job_id, clip_index, clean_filename):
             pass
 
 
+def _caption_inputs(job_id, clip_index):
+    """(clip, transcript, start, end) for the clip's captions, or None when
+    there is nothing to caption. A recut clip is a concatenation of source
+    segments, so the flat start..end window is wrong for it: it is captioned
+    against the clip-relative remapped transcript (same trick /api/subtitle
+    uses). User-edited words win over both."""
+    meta_files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
+    if not meta_files:
+        return None
+    with open(meta_files[0], 'r') as f:
+        data = json.load(f)
+    transcript = data.get('transcript')
+    clips = data.get('shorts', [])
+    if not transcript or clip_index >= len(clips):
+        return None
+    clip = clips[clip_index]
+    recipe_segments = (clip.get('recipe') or {}).get('segments')
+    if recipe_segments:
+        transcript = recut.virtual_transcript(transcript, recipe_segments)
+        start, end = 0.0, recut.total_duration(recipe_segments)
+    else:
+        start, end = clip['start'], clip['end']
+    if clip.get('caption_words'):
+        transcript = _words_transcript(clip['caption_words'],
+                                       transcript.get('language', 'en'))
+        start, end = 0.0, transcript['segments'][0]['end']
+    return clip, transcript, start, end
+
+
 def _reapply_captions(job_id, clip_index, video_path):
-    """Re-burn the default captions onto a freshly derived file.
+    """Re-burn the clip's captions onto a freshly derived file.
 
     Captions must always be the LAST layer. Editing or hooking a clip that
     already had them burned in produced `edited_subtitled_<...>`, and the next
@@ -957,29 +986,10 @@ def _reapply_captions(job_id, clip_index, video_path):
     Returns the captioned path, or None if there was nothing to caption.
     """
     try:
-        meta_files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
-        if not meta_files:
+        inputs = _caption_inputs(job_id, clip_index)
+        if not inputs:
             return None
-        with open(meta_files[0], 'r') as f:
-            data = json.load(f)
-        transcript = data.get('transcript')
-        clips = data.get('shorts', [])
-        if not transcript or clip_index >= len(clips):
-            return None
-        clip = clips[clip_index]
-        # A recut clip is a concatenation of source segments, so the flat
-        # start..end window is wrong for it — caption against the clip-relative
-        # remapped transcript instead (same trick /api/subtitle uses).
-        recipe_segments = (clip.get('recipe') or {}).get('segments')
-        if recipe_segments:
-            transcript = recut.virtual_transcript(transcript, recipe_segments)
-            start, end = 0.0, recut.total_duration(recipe_segments)
-        else:
-            start, end = clip['start'], clip['end']
-        if clip.get('caption_words'):
-            transcript = _words_transcript(clip['caption_words'],
-                                           transcript.get('language', 'en'))
-            start, end = 0.0, transcript['segments'][0]['end']
+        clip, transcript, start, end = inputs
         if clip.get('caption_style'):
             return _restyle_captions(video_path, transcript, start, end,
                                      clip['caption_style'],
@@ -991,13 +1001,61 @@ def _reapply_captions(job_id, clip_index, video_path):
         return None
 
 
-# --- Non-destructive layers --------------------------------------------------
-# A clip is a recipe: the cut (recipe.segments / start..end), the framing, a
-# hook (auto_hook) and a caption look + edited words. Changing the cut or the
-# framing renders a clean base and then puts BOTH layers back from the
-# recipe, hook first and captions last, so edits never depend on the order
-# they were made in. Edited words are kept in source time
-# (caption_words_src) so a new cut keeps the edits for the words it holds.
+def _caption_plan(job_id, clip_index, video_path):
+    """The captions _reapply_captions would burn on a file with the picture of
+    ``video_path``, as (vf, generation_id), without burning anything: the
+    caption file is written and the filter handed to the hook pass, which
+    renders hook and hook+captions from one decode. None: nothing to caption."""
+    inputs = _caption_inputs(job_id, clip_index)
+    if not inputs:
+        return None
+    clip, transcript, start, end = inputs
+    if not clip.get('caption_style'):
+        import main as _main
+        return _main.auto_caption_clip(video_path, transcript, start, end, plan_only=True)
+    style = clip['caption_style']
+    generation_id = int(time.time())
+    karaoke = style.get("style") == "karaoke"
+    sub_path = os.path.join(
+        os.path.dirname(video_path),
+        f"subs_restyle_{generation_id}_{uuid.uuid4().hex[:8]}.{'ass' if karaoke else 'srt'}")
+    seams = layout_ranges.split_ranges(clip.get('layout_ranges') or layout_ranges.read(video_path))
+    burn = _caption_style_file(video_path, sub_path, transcript, start, end, style, seams)
+    if not burn:
+        return None
+    return subtitles_filter(sub_path, **burn), generation_id
+
+
+def _hook_with_captions(job_id, clip_index, video_path, output_path, captions, **hook):
+    """Burn a hook onto clean ``video_path`` -> ``output_path`` and, when
+    ``captions``, the clip's captions on top of that into
+    ``subtitled_<ts>_<output name>``, both from ONE ffmpeg run (one decode,
+    one overlay) instead of two passes back to back.
+    Returns (add_hook_to_video's result, captioned path or None). None for
+    the captioned path means the caller still has to burn captions itself:
+    planning them failed, or the combined run did and the hook went on alone."""
+    also = captioned = None
+    if captions:
+        try:
+            plan = _caption_plan(job_id, clip_index, video_path)
+        except Exception as e:
+            print(f"⚠️  Could not plan captions for the hook pass: {e}")
+            plan = None
+        if plan:
+            vf, generation_id = plan
+            captioned = os.path.join(os.path.dirname(output_path),
+                                     f"subtitled_{generation_id}_{os.path.basename(output_path)}")
+            also = (vf, captioned)
+    if also:
+        try:
+            result = add_hook_to_video(video_path, output_path=output_path, also=also, **hook)
+            if os.path.exists(captioned):
+                return result, captioned
+            return result, None
+        except Exception as e:
+            print(f"⚠️  Hook + captions in one pass failed ({e}); burning them separately.")
+    return add_hook_to_video(video_path, output_path=output_path, **hook), None
+
 
 def _clip_segments(clip):
     segs = (clip.get('recipe') or {}).get('segments')
@@ -1049,28 +1107,6 @@ def _words_for_cut(src_words, segments, transcript=None):
     return fix_word_overlaps(out)
 
 
-def _apply_hook_layer(job_id, clip, video_path):
-    """Burn the clip's recorded hook onto a clean file. Returns the hooked path,
-    or None when the clip has no hook."""
-    hook = clip.get('auto_hook') or {}
-    text = (hook.get('text') or '').strip()
-    if not text:
-        return None
-    output_path = os.path.join(os.path.dirname(video_path),
-                               f"hooked_{int(time.time())}_{os.path.basename(video_path)}")
-    try:
-        add_hook_to_video(
-            video_path, text, output_path, position=hook.get('position') or "auto",
-            font_scale=float(hook.get('scale') or 1.0), duration=hook.get('duration_seconds'),
-            style=hook.get('style') or "pill", font=hook.get('font'),
-            layout_ranges=clip.get('layout_ranges'),
-            has_captions=True)   # captions always go back on top
-        return output_path if os.path.exists(output_path) else None
-    except Exception as e:
-        print(f"⚠️  Could not re-apply the hook to {video_path}: {e}")
-        return None
-
-
 def _rebuild_layers(job_id, clip_index, base_path, captions=True):
     """Hook, then captions, from the clip's recipe onto a clean ``base_path``.
     Returns the final file's path (``base_path`` when there is nothing to add).
@@ -1080,7 +1116,26 @@ def _rebuild_layers(job_id, clip_index, base_path, captions=True):
         return base_path
     with open(meta_files[0], encoding='utf-8') as f:
         clip = json.load(f).get('shorts', [])[clip_index]
-    path = _apply_hook_layer(job_id, clip, base_path) or base_path
+    path = base_path
+    hook = clip.get('auto_hook') or {}
+    text = (hook.get('text') or '').strip()
+    if text:
+        hooked = os.path.join(os.path.dirname(base_path),
+                              f"hooked_{int(time.time())}_{os.path.basename(base_path)}")
+        try:
+            _, captioned = _hook_with_captions(
+                job_id, clip_index, base_path, hooked, captions,
+                text=text, position=hook.get('position') or "auto",
+                font_scale=float(hook.get('scale') or 1.0), duration=hook.get('duration_seconds'),
+                style=hook.get('style') or "pill", font=hook.get('font'),
+                layout_ranges=clip.get('layout_ranges'),
+                has_captions=True)   # captions always go back on top
+            if captioned:
+                return captioned
+            if os.path.exists(hooked):
+                path = hooked
+        except Exception as e:
+            print(f"⚠️  Could not re-apply the hook to {base_path}: {e}")
     if captions:
         path = _reapply_captions(job_id, clip_index, path) or path
     return path
@@ -1114,11 +1169,12 @@ def _words_transcript(words, language="en"):
     }
 
 
-def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
+def _caption_style_file(video_path, sub_path, transcript, start, end,
                         style, split_ranges=None):
-    """Generate the caption file for ``style`` (CAPTION_STYLE_FIELDS, a
-    missing field takes the SubtitleRequest default) and burn it onto
-    ``video_path``. Returns False when no words fall in the range."""
+    """Write the caption file for ``style`` (CAPTION_STYLE_FIELDS, a missing
+    field takes the SubtitleRequest default) for a picture shaped like
+    ``video_path``. Returns the keyword arguments burn_subtitles /
+    subtitles_filter draw it with, or None when no words fall in the range."""
     s = {k: SubtitleRequest.model_fields[k].default for k in CAPTION_STYLE_FIELDS}
     s.update({k: v for k, v in (style or {}).items() if k in s})
     max_chars = (max(1, min(40, int(s["max_chars"])))
@@ -1146,13 +1202,22 @@ def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
         ok = generate_srt(transcript, start, end, sub_path,
                           max_chars or 20, max_duration or 2.0)
     if not ok:
+        return None
+    return dict(alignment=s["position"], fontsize=s["font_size"],
+                font_name=s["font_name"], font_color=s["font_color"],
+                border_color=s["border_color"], border_width=s["border_width"],
+                bg_color=s["bg_color"], bg_opacity=s["bg_opacity"],
+                bold=s["bold"], italic=s["italic"], letter_spacing=s["letter_spacing"])
+
+
+def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
+                        style, split_ranges=None):
+    """Generate the caption file for ``style`` and burn it onto
+    ``video_path``. Returns False when no words fall in the range."""
+    burn = _caption_style_file(video_path, sub_path, transcript, start, end, style, split_ranges)
+    if not burn:
         return False
-    burn_subtitles(video_path, sub_path, out_path,
-                   alignment=s["position"], fontsize=s["font_size"],
-                   font_name=s["font_name"], font_color=s["font_color"],
-                   border_color=s["border_color"], border_width=s["border_width"],
-                   bg_color=s["bg_color"], bg_opacity=s["bg_opacity"],
-                   bold=s["bold"], italic=s["italic"], letter_spacing=s["letter_spacing"])
+    burn_subtitles(video_path, sub_path, out_path, **burn)
     return True
 
 
@@ -5122,7 +5187,7 @@ async def _ensure_job_files(job_id: str, request: Request) -> bool:
 
 
 from editor import VideoEditor
-from subtitles import generate_srt, generate_ass, burn_subtitles, generate_srt_from_video, CAPTION_PRESETS, frame_aspect_of
+from subtitles import generate_srt, generate_ass, burn_subtitles, subtitles_filter, generate_srt_from_video, CAPTION_PRESETS, frame_aspect_of
 from hooks import add_hook_to_video
 from translate import translate_video, get_supported_languages
 from thumbnail import (analyze_video_for_titles, refine_titles, generate_thumbnail,
@@ -6745,6 +6810,7 @@ async def add_hook(req: HookRequest, request: Request):
     input_path = os.path.join(output_dir, clean_name)
 
     hook_result = None   # auto placement reports where the box landed
+    captioned_path = None   # set when the hook pass burned the captions too
     if req.remove:
         # Nothing to burn: the hook-less file is the target; captions (if the
         # clip had them) go back on below.
@@ -6767,15 +6833,17 @@ async def add_hook(req: HookRequest, request: Request):
 
         try:
             # Run in thread pool
+            # Hook and the captions over it from one ffmpeg run.
             def run_hook():
-                return add_hook_to_video(
-                    input_path, req.text, output_path, position=req.position or "auto",
+                return _hook_with_captions(
+                    req.job_id, req.clip_index, input_path, output_path, had_captions,
+                    text=req.text, position=req.position or "auto",
                     font_scale=font_scale, duration=req.duration_seconds, style=req.style,
                     font=req.font, layout_ranges=clip_data.get('layout_ranges'),
                     has_captions=had_captions)
 
             loop = asyncio.get_event_loop()
-            hook_result = await loop.run_in_executor(None, run_hook)
+            hook_result, captioned_path = await loop.run_in_executor(None, run_hook)
 
         except Exception as e:
             print(f"❌ Hook Error: {e}")
@@ -6787,7 +6855,9 @@ async def add_hook(req: HookRequest, request: Request):
             await _metering.commit_reservation(reservation_id)
 
     # Captions back on top (see /api/edit for the same invariant).
-    if had_captions:
+    if captioned_path:
+        output_filename = os.path.basename(captioned_path)
+    elif had_captions:
         recap = await asyncio.get_event_loop().run_in_executor(
             None, _reapply_captions, req.job_id, req.clip_index, output_path)
         if recap:
