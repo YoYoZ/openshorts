@@ -6158,7 +6158,18 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
     # The aspect follows the job's output format (9:16, or 1:1 for square).
     aspect = 1.0 if data.get('output_format') == 'square' else 9.0 / 16.0
     crop_w = min(orig_w, orig_h * aspect)
+    # One half of a split: the exact box split_layout.split_geometry crops,
+    # so the editor draws what each half will show.
+    split_box = None
+    try:
+        import split_layout
+        out_w, out_h = (1080, 1080) if aspect == 1.0 else (1080, 1920)
+        sw, sh, _x, _y, _hh = split_layout.split_geometry(orig_w, orig_h, out_w, out_h, (orig_w / 2, orig_h / 2))
+        split_box = {"w": round(sw / orig_w, 4), "h": round(sh / orig_h, 4), "y_bias": 0.42}
+    except Exception as exc:
+        print(f"Split box unavailable: {exc}")
     return {
+        "split_box": split_box,
         "saved_cuts": saved_cuts,
         "zone_cuts": want_cuts or [],
         "sentence_cuts": sentence_cuts,

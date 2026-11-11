@@ -118,7 +118,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
             return setZone(zone.index, { mode: 'zoom', x: clamp(x, w / 2), width: w });
         }
         if (mode === 'split') {
-            return setZone(zone.index, { top: { x: clamp(x - 0.2), y }, bottom: { x: clamp(x + 0.2), y } });
+            return setZone(zone.index, { top: { x: Math.max(0.25, x - 0.25), y }, bottom: { x: Math.min(0.75, x + 0.25), y } });
         }
         return undefined;
     };
@@ -216,6 +216,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                             value={overrides[zone.index]}
                             mode={modeOf(overrides[zone.index])}
                             fillWidth={data.crop_width_fraction}
+                            splitBox={data.split_box}
                             previewUrl={data.preview_url}
                             playing={playing === zone.index}
                             onPlayToggle={() => setPlaying((p) => (p === zone.index ? null : zone.index))}
@@ -253,7 +254,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 // One zone: its layout picker, and the frame with the window(s) to drag.
 // While it plays, the frame is the uncropped preview seeked to this zone, so
 // the window can be judged against moving pictures and sound.
-function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayToggle, onMode, onValue,
+function ZoneRow({ zone, value, mode, fillWidth, splitBox, previewUrl, playing, onPlayToggle, onMode, onValue,
                    clamp, canMerge, onSplit, onMerge }) {
     const boxRef = useRef(null);
     const videoRef = useRef(null);
@@ -275,28 +276,33 @@ function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayTogg
     const centre = typeof value === 'number' ? value
         : (value?.x ?? clamp(zone.suggested_center, zoomW / 2));
 
-    const fractionFromEvent = useCallback((clientX) => {
+    const fractionFromEvent = useCallback((clientX, clientY) => {
         const el = boxRef.current;
-        if (!el) return 0.5;
+        if (!el) return [0.5, 0.5];
         const rect = el.getBoundingClientRect();
-        return (clientX - rect.left) / rect.width;
+        return [(clientX - rect.left) / rect.width, (clientY - rect.top) / rect.height];
     }, []);
 
-    const move = useCallback((which, f) => {
+    // A split half is the box split_layout crops: wider than tall (9:8 on a
+    // 9:16 short), placed by a point it keeps a little above its middle.
+    const sb = splitBox || { w: fillWidth, h: 1, y_bias: 0.42 };
+    const clampSplitY = useCallback((y) => Math.min(1 - sb.h * (1 - sb.y_bias), Math.max(sb.h * sb.y_bias, y)), [sb.h, sb.y_bias]);
+
+    const move = useCallback((which, [f, fy]) => {
         if (which === 'single') {
             if (mode === 'zoom') onValue({ ...value, mode: 'zoom', x: clamp(f, zoomW / 2), width: zoomW });
             else onValue(clamp(f));   // dragging an auto zone makes it a fill
         } else {
             const base = value && value.top ? value : { top: { x: 0.3, y: 0.5 }, bottom: { x: 0.7, y: 0.5 } };
-            onValue({ ...base, [which]: { x: clamp(f), y: base[which]?.y ?? 0.5 } });
+            onValue({ ...base, [which]: { x: clamp(f, sb.w / 2), y: clampSplitY(fy) } });
         }
-    }, [mode, value, onValue, clamp, zoomW]);
+    }, [mode, value, onValue, clamp, zoomW, sb.w, clampSplitY]);
 
     useEffect(() => {
         if (!dragging) return undefined;
         const onMove = (e) => {
-            const x = e.touches ? e.touches[0].clientX : e.clientX;
-            move(dragging, fractionFromEvent(x));
+            const p = e.touches ? e.touches[0] : e;
+            move(dragging, fractionFromEvent(p.clientX, p.clientY));
         };
         const up = () => setDragging(null);
         window.addEventListener('mousemove', onMove);
@@ -314,8 +320,8 @@ function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayTogg
     const startDrag = (which) => (e) => {
         e.stopPropagation();
         setDragging(which);
-        const x = e.touches ? e.touches[0].clientX : e.clientX;
-        move(which, fractionFromEvent(x));
+        const p = e.touches ? e.touches[0] : e;
+        move(which, fractionFromEvent(p.clientX, p.clientY));
     };
 
     const win = (c, w, label, which) => (
@@ -327,6 +333,18 @@ function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayTogg
             )}
         </div>
     );
+
+    const splitWin = (half, label, which) => {
+        const top = clampSplitY(half.y) - sb.h * sb.y_bias;
+        return (
+            <div key={which} onMouseDown={startDrag(which)} onTouchStart={startDrag(which)}
+                className="absolute border-2 border-brass cursor-move bg-brass/5"
+                style={{ left: `${(clamp(half.x, sb.w / 2) - sb.w / 2) * 100}%`, width: `${sb.w * 100}%`,
+                         top: `${top * 100}%`, height: `${sb.h * 100}%` }}>
+                <span className="absolute top-1 left-1 text-[10px] px-1 rounded bg-brass text-brassink lowercase">{label}</span>
+            </div>
+        );
+    };
 
     const showsWindow = mode === 'auto' || mode === 'fill' || mode === 'zoom';
 
@@ -387,8 +405,8 @@ function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayTogg
                 )}
                 {showsWindow && win(centre, zoomW, mode === 'zoom' ? 'zoom' : null, 'single')}
                 {mode === 'split' && value?.top && [
-                    win(value.top.x, fillWidth, 'top', 'top'),
-                    win(value.bottom.x, fillWidth, 'bottom', 'bottom'),
+                    splitWin(value.top, 'top', 'top'),
+                    splitWin(value.bottom, 'bottom', 'bottom'),
                 ]}
             </div>
 
@@ -406,7 +424,7 @@ function ZoneRow({ zone, value, mode, fillWidth, previewUrl, playing, onPlayTogg
             )}
             {mode === 'fit' && <p className="text-[11px] text-muted">The whole frame, on a blurred copy of itself.</p>}
             {mode === 'split' && (
-                <p className="text-[11px] text-muted">Two regions stacked: <strong>top</strong> above, <strong>bottom</strong> below. Drag each onto its person.</p>
+                <p className="text-[11px] text-muted">Two regions stacked: <strong>top</strong> above, <strong>bottom</strong> below. Each box is exactly what its half shows; drag them anywhere.</p>
             )}
             {mode === 'auto' && <p className="text-[11px] text-muted">Automatic. Drag the window or pick a layout to take over.</p>}
         </div>
