@@ -13,8 +13,32 @@ _SENTENCE_END = re.compile(r"[.!?…][\"'»”’)]*$")
 _STRIP = re.compile(r"[^\w]+", re.UNICODE)
 
 
-class _WordsResponse(BaseModel):
-    words: List[str]
+class _TextResponse(BaseModel):
+    text: str
+
+
+MIN_MATCH = 0.9   # share of the stretch's words the answer must align with
+
+
+def _align(source_norm, answer_norm):
+    """Longest common subsequence of two token lists: [(i, j)] matched pairs.
+    The model is asked for the same words, but sometimes changes a form or
+    splits a token; aligning keeps every word it did not touch."""
+    n, m = len(source_norm), len(answer_norm)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            dp[i][j] = dp[i + 1][j + 1] + 1 if source_norm[i] == answer_norm[j] and source_norm[i] \
+                else max(dp[i + 1][j], dp[i][j + 1])
+    pairs, i, j = [], 0, 0
+    while i < n and j < m:
+        if source_norm[i] == answer_norm[j] and source_norm[i]:
+            pairs.append((i, j)); i += 1; j += 1
+        elif dp[i + 1][j] >= dp[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return pairs
 
 
 def find_dry_runs(words, min_seconds=20):
@@ -52,13 +76,18 @@ def restore(transcript, language):
                 chunk_end = min(b, chunk_start + 600)
                 entries = flat[chunk_start:chunk_end]
                 source = [x[2].get("word", "") for x in entries]
-                prompt = (f"Add natural punctuation and sentence capitalization to these {language or 'unknown-language'} transcript words. "
-                          "Return exactly the same words in the same order, changing only punctuation and capitalization. "
-                          "Preserve leading spaces. Each array item corresponds to one input word.\n" + repr(source))
-                parsed, _ = llm_backend.generate_json(prompt, _WordsResponse, tier="simple")
-                result = parsed.get("words") if isinstance(parsed, dict) else None
-                if not isinstance(result, list) or len(result) != len(source) or any(_normalize(x) != _normalize(y) for x, y in zip(source, result)):
+                prompt = (f"Add natural punctuation (commas, full stops, question marks) and sentence capitalization to "
+                          f"this {language or 'unknown-language'} speech transcript. Do not change, add, remove or reorder "
+                          "any word. Return the text only.\n\n" + " ".join(w.strip() for w in source))
+                parsed, _ = llm_backend.generate_json(prompt, _TextResponse, tier="simple")
+                answer = str((parsed or {}).get("text") or "").split()
+                pairs = _align([_normalize(w) for w in source], [_normalize(w) for w in answer])
+                if len(pairs) < MIN_MATCH * len(source):
+                    log.info("punctuation: stretch skipped, answer aligned %d/%d words", len(pairs), len(source))
                     continue
+                result = list(source)
+                for i, j in pairs:
+                    result[i] = answer[j]
                 changed = 0
                 for (si, wi, original), replacement in zip(entries, result):
                     # Whisper words carry their leading space (" слово"); the
