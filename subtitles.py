@@ -288,6 +288,21 @@ def _margin_v_for(ass_alignment, margin_v):
 # so the active word reads instantly on any background; the base text stays
 # fully opaque (dimming it tested worse over bright scenes). This is a starting
 # point, not a cage — the subtitle modal still overrides every field.
+# Outline widths are given in the editor's units. The editor preview draws
+# them at 3.85 * 0.85 CSS px per unit on its 1080x1920 frame (Subtitles.tsx),
+# while libass draws PlayResY 288 units at 1920 / 288 = 6.67 px: the burned
+# outline came out twice as thick as the preview's, eating into the letters.
+# Scaling the burn by the ratio of the two makes them the same width.
+OUTLINE_BURN_SCALE = (3.85 * 0.85) / (1920 / 288)
+# Glow (effect "glow"), matched side by side against the real editor preview
+# (Remotion, CSS text-shadow 12px + 24px over a 2px-per-unit stroke) on the
+# same word of a real clip, 11-nov-2026:
+GLOW_HALO_BLUR = 2.5       # blur of the halo layer under the word, in units
+GLOW_HALO_EXTRA = 1.0      # halo reaches this far past the outline, in units
+GLOW_EDGE_DARKEN = 0.35    # the active word's outline: highlight colour at 35%
+                           # brightness (the preview's glow tints its thin
+                           # black stroke dark red)
+
 AUTO_CAPTION_STYLE = {
     "style": "karaoke",
     "alignment": "bottom",
@@ -632,7 +647,7 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         outline_colour = hex_to_ass_color(border_color, 1.0, fallback="000000")
         # 0 means no outline: the editor's "none" is a choice, not a hint
         # (a 1px floor here drew borders the user had switched off).
-        outline_width = int(border_width)
+        outline_width = round(float(border_width) * OUTLINE_BURN_SCALE, 2)
 
     back_colour = hex_to_ass_color("#000000", 0.55 if shadow else 0.0)
     highlight_inline = _hex_to_ass_inline_color(highlight_color, fallback="FFD700")
@@ -652,9 +667,15 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         # blurred. Calibrated by eye against the preview's CSS on a real
         # frame (11-nov-2026): a wider or stronger halo blooms over the word.
         active_prefix = f"{{\\c{highlight_inline}}}"
-        halo = outline_width + 1.5
-        halo_prefix = (f"{{\\1c{highlight_inline}\\3c{highlight_inline}\\1a&H60&\\3a&H60&"
-                       f"\\bord{halo:g}\\blur2.5}}")
+        hx = str(highlight_color or "#FFD700").lstrip("#")
+        if _HEX_COLOR_RE.match(hx):
+            dk = [int(int(hx[k:k + 2], 16) * GLOW_EDGE_DARKEN) for k in (0, 2, 4)]
+            active_prefix = (f"{{\\c{highlight_inline}"
+                             f"\\3c&H{dk[2]:02X}{dk[1]:02X}{dk[0]:02X}&}}")
+        # Like CSS text-shadow: a blurred copy of the word's shape (glyphs
+        # plus outline) in the highlight colour, under it.
+        halo_prefix = (f"{{\\1c{highlight_inline}\\3c{highlight_inline}"
+                       f"\\bord{max(outline_width, 0.5) + GLOW_HALO_EXTRA:g}\\blur{GLOW_HALO_BLUR:g}}}")
     elif effect == "box":
         box_bord = max(4, int(outline_width) + 3)
         active_prefix = (f"{{\\c&HFFFFFF&\\3c{highlight_inline}"
@@ -867,10 +888,10 @@ def subtitles_filter(srt_path, alignment=2, fontsize=16,
         outline_colour = hex_to_ass_color(bg_color, bg_opacity, fallback="000000")
         outline_width = 1
     else:
-        # Outline mode: text border/outline
+        # Outline mode: text border/outline (see OUTLINE_BURN_SCALE)
         border_style = 1
         outline_colour = hex_to_ass_color(border_color, 1.0, fallback="000000")
-        outline_width = int(border_width)
+        outline_width = round(float(border_width) * OUTLINE_BURN_SCALE, 2)
 
     back_colour = hex_to_ass_color("#000000", 0.0)
 

@@ -214,7 +214,8 @@ class TestGenerateAss:
         # normal outline (as the editor preview draws it).
         assert "\\3c&H88FF00&" in content and "\\blur2.5" in content
         assert "Dialogue: 0," in content and "Dialogue: 1," in content
-        assert "{\\c&H88FF00&}" in content
+        # the word in the highlight colour, its outline a dark shade of it
+        assert "\\c&H88FF00&\\3c&H2F5900&" in content
 
     def test_pop_effect_animates_scale(self, tmp_path):
         from subtitles import generate_ass
