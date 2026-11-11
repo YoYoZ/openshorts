@@ -6086,9 +6086,15 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
                                         f"{clip_index}_{uuid.uuid4().hex[:8]}")
             os.replace(part, work_path)
         try:
+            cached = None
             if os.path.exists(scenes_cache):
                 with open(scenes_cache, encoding='utf-8') as fh:
                     cached = json.load(fh)
+                # The whole answer is cached: the editor builds its zones
+                # itself and only needs the detected scenes' face positions.
+                if cached.get('result') and os.path.exists(preview_path):
+                    r = cached['result']
+                    return r['w'], r['h'], r['scenes'], preview_name, r['auto_cuts'], r['duration']
                 fps = float(cached['fps'])
                 auto_bounds = [tuple(b) for b in cached['bounds']]
             else:
@@ -6098,10 +6104,6 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
                 with open(scenes_cache, 'w', encoding='utf-8') as fh:
                     json.dump({'fps': fps, 'bounds': auto_bounds}, fh)
             bounds = auto_bounds
-            if want_cuts is not None:
-                import reframe_v2
-                bounds = [(s.get_frames(), e.get_frames())
-                          for s, e in reframe_v2.user_zones(work_path, want_cuts, fps)]
             orig_w, orig_h = m.get_video_resolution(work_path)
 
             cap = cv2.VideoCapture(work_path)
@@ -6150,6 +6152,13 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
                     "suggested_center_y": round(suggested_y, 4),
                 })
             cap.release()
+            try:
+                with open(scenes_cache, 'w', encoding='utf-8') as fh:
+                    json.dump({'fps': fps, 'bounds': auto_bounds,
+                               'result': {'w': orig_w, 'h': orig_h, 'scenes': out,
+                                          'auto_cuts': auto_cuts, 'duration': duration}}, fh)
+            except OSError:
+                pass
             return orig_w, orig_h, out, preview_name, auto_cuts, duration
         finally:
             # The uncropped cut becomes a light preview instead of being

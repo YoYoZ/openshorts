@@ -118,6 +118,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
     const [saving, setSaving] = useState(false);
     const [t, setT] = useState(0);
     const [playing, setPlaying] = useState(false);
+    const [selCut, setSelCut] = useState(null);      // index of the cut picked on the timeline (merge removes it)
     const [dragging, setDragging] = useState(null);  // viewport drag: 'single' | 'top' | 'bottom' | 'top-size' | 'bottom-size'
 
     const videoRef = useRef(null);
@@ -235,7 +236,12 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
         seek(v);                         // the viewport shows the first frame after the cut
     }, [cuts, duration, data, seek]);
 
-    const splitAtPlayhead = useCallback(() => rezone([...cuts, t]), [rezone, cuts, t]);
+    const splitAtPlayhead = useCallback(() => { rezone([...cuts, t]); setSelCut(null); }, [rezone, cuts, t]);
+    const mergeAt = useCallback((i) => {
+        if (i === null || i === undefined || i < 0 || i >= cuts.length) return;
+        rezone(cuts.filter((_, j) => j !== i));
+        setSelCut(null);
+    }, [rezone, cuts]);
 
     const setZone = useCallback((idx, value) => setOverrides((o) => {
         const next = { ...o };
@@ -267,6 +273,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
             if (e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
             if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
             else if (e.key === 's' || e.key === 'S') { e.preventDefault(); splitAtPlayhead(); }
+            else if ((e.key === 'Delete' || e.key === 'Backspace') && selCut !== null) { e.preventDefault(); mergeAt(selCut); }
             else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(t - (e.shiftKey ? 1 : STEP)); }
             else if (e.key === 'ArrowRight') { e.preventDefault(); seek(t + (e.shiftKey ? 1 : STEP)); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); const p = [...cuts].reverse().find((c) => c < t - 0.01); seek(p ?? 0); }
@@ -274,7 +281,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [togglePlay, splitAtPlayhead, seek, t, cuts]);
+    }, [togglePlay, splitAtPlayhead, seek, t, cuts, selCut, mergeAt]);
 
     // ---- viewport dragging ---------------------------------------------
     const frac = useCallback((e) => {
@@ -458,9 +465,10 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                             <button type="button" onClick={splitAtPlayhead} className="btn-ghost px-2.5 py-1.5" title="cut at the playhead (S)">
                                 <Scissors size={13} /> cut
                             </button>
-                            <button type="button" disabled={!cur || cur.index >= zones.length - 1}
-                                onClick={() => rezone(cuts.filter((_, j) => j !== cur.index))}
-                                className="btn-ghost px-2.5 py-1.5 disabled:opacity-30" title="merge this zone with the next">
+                            <button type="button" disabled={selCut === null}
+                                onClick={() => mergeAt(selCut)}
+                                className="btn-ghost px-2.5 py-1.5 disabled:opacity-30"
+                                title={selCut === null ? 'click a cut on the timeline first' : 'remove the selected cut, joining its two zones (Delete)'}>
                                 <Merge size={13} /> merge
                             </button>
                             {curMode !== 'auto' && (
@@ -482,10 +490,10 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                             <Timeline zones={zones} cuts={cuts} duration={duration} overrides={overrides} t={t}
                                 sentenceCuts={data.sentence_cuts || []}
                                 onSeek={(tt) => { if (videoRef.current && !videoRef.current.paused) togglePlay(); seek(tt); }}
-                                onMove={moveCut}
-                                onRemove={(i) => rezone(cuts.filter((_, j) => j !== i))} />
+                                onMove={moveCut} selected={selCut} onSelect={setSelCut}
+                                onRemove={mergeAt} />
                             <p className="mt-1.5 text-[10px] text-muted">
-                                space play · S cut · ←/→ frame (shift 1 s) · ↑/↓ previous/next cut · drag a cut (alt: no snap) · double-click a cut to remove
+                                space play · S cut at playhead · click a cut, then merge (or Delete) · drag a cut (alt: no snap) · ←/→ frame (shift 1 s) · ↑/↓ previous/next cut
                             </p>
                         </div>
                     </>
@@ -512,7 +520,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 
 
 // Zones coloured by layout, sentence ticks, draggable cuts, a scrubbable playhead.
-function Timeline({ zones, cuts, duration, overrides, t, sentenceCuts, onSeek, onMove, onRemove }) {
+function Timeline({ zones, cuts, duration, overrides, t, sentenceCuts, onSeek, onMove, onRemove, selected, onSelect }) {
     const barRef = useRef(null);
     const [drag, setDrag] = useState(null);   // cut index | 'head'
 
@@ -534,7 +542,7 @@ function Timeline({ zones, cuts, duration, overrides, t, sentenceCuts, onSeek, o
 
     return (
         <div ref={barRef} className="relative h-14 rounded-input border border-rule bg-paper3 select-none cursor-text"
-            onPointerDown={(e) => { setDrag('head'); onSeek(tAt(e.clientX)); }}>
+            onPointerDown={(e) => { e.preventDefault(); setDrag('head'); onSelect(null); onSeek(tAt(e.clientX)); }}>
             {zones.map((z) => (
                 <div key={z.index}
                     className="absolute top-0 bottom-3 border-r border-black/40 text-[10px] text-ink2 px-1 overflow-hidden pointer-events-none"
@@ -547,16 +555,20 @@ function Timeline({ zones, cuts, duration, overrides, t, sentenceCuts, onSeek, o
             ))}
             {cuts.map((c, i) => (
                 <div key={`c${i}`}
-                    onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); setDrag(i); onMove(i, c, false); }}
+                    onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); setDrag(i); onSelect(i); onMove(i, c, false); }}
                     onDoubleClick={(e) => { e.stopPropagation(); onRemove(i); }}
                     title={`${c.toFixed(2)} s · drag to move · double-click to remove`}
                     className="absolute top-0 bottom-3 -ml-[6px] w-[12px] cursor-ew-resize group z-10"
                     style={{ left: pct(c) }}>
-                    <div className={`mx-auto h-full w-[3px] rounded ${drag === i ? 'bg-white' : 'bg-brass group-hover:bg-white'}`} />
+                    <div className={`mx-auto h-full rounded ${selected === i ? 'w-[5px] bg-white shadow-[0_0_0_2px_rgba(214,170,90,0.9)]' : `w-[3px] ${drag === i ? 'bg-white' : 'bg-brass group-hover:bg-white'}`}`} />
                 </div>
             ))}
-            <div className="absolute -top-1 -bottom-1 w-[2px] bg-red-500 pointer-events-none z-20" style={{ left: pct(t) }}>
-                <div className="absolute -top-1 -left-[5px] w-3 h-3 rotate-45 bg-red-500" />
+            {/* the playhead: grab the line or its head and drag */}
+            <div onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); setDrag('head'); onSelect(null); }}
+                className="absolute -top-2 -bottom-1 -ml-[7px] w-[14px] z-[5] cursor-grab active:cursor-grabbing"
+                style={{ left: pct(t) }}>
+                <div className="mx-auto h-full w-[2px] bg-red-500" />
+                <div className="absolute top-0 left-[2px] w-[10px] h-[10px] rotate-45 bg-red-500" />
             </div>
         </div>
     );
