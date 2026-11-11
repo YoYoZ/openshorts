@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { useWorkspace } from '../lib/workspace';
 import { Loader2 } from 'lucide-react';
 // The Remotion player is the heaviest part of the bundle: load it when this
 // editor first opens, not with the app.
@@ -68,6 +69,7 @@ function loadHookPrefs() {
 }
 
 export default function HookModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, applyPending = false, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
+    const workspace = useWorkspace();
     const prefs = loadHookPrefs();
     const [text, setText] = useState(initialText || 'POV: You are using the viral hook feature');
     // Stored as `pos`, not `position`: before 'auto' existed every save wrote
@@ -136,6 +138,8 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                             durationInSeconds={durationInSeconds || 30}
                             hook={hookConfig}
                             subtitles={existingSubtitles || null}
+                            initialTime={workspace.timeRef.current}
+                            onTime={workspace.setTime}
                         />
                     ) : (
                         <>

@@ -7,6 +7,7 @@ import {
 import { getApiUrl } from '../config';
 import { apiFetch, apiJson, QuotaError, openQuotaWall } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useWorkspace } from '../lib/workspace';
 
 // Full-screen clip editor: shows WHICH source segments a clip was cut from,
 // lets the user trim/extend/split/reorder them (word-snapped), and re-renders
@@ -118,6 +119,7 @@ function editorReducer(state, action) {
 }
 
 export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, onCreated, inline = false }) {
+    const { timeRef, setTime } = useWorkspace();
     const { refreshMe } = useAuth();
     const [edl, setEdl] = useState(null);
     const [loadError, setLoadError] = useState(null);
@@ -580,6 +582,16 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         return sp.rendered + offset;
     }, [coverage, spanIndexAt]);
 
+    useEffect(() => {
+        const v = videoRef.current;
+        const rendered = clipToRendered(timeRef.current);
+        if (v && rendered !== null && v.readyState >= 1) {
+            v.pause();
+            v.currentTime = rendered;
+            setPlayhead(timeRef.current);
+        }
+    }, [clipToRendered, previewUrl, timeRef]);
+
     // Used when the native <video> controls are dragged: the file's own time
     // has to come back onto the clip's timeline.
     const renderedToClip = useCallback((r) => {
@@ -673,7 +685,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     // the frame left on screen is the endpoint itself, not the overshoot.
     const stepPlayback = useCallback((v) => {
         if (dragRef.current?.kind === 'scrub') return;   // seeks report a frame late
-        if (!dirty) { setPlayhead(v.currentTime); return; }
+        if (!dirty) { setPlayhead(v.currentTime); setTime(v.currentTime); return; }
 
         let i = playSpanRef.current;
         let sp = coverage[i];
@@ -682,6 +694,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         const spEnd = sp.rendered !== null ? sp.rendered + (sp.end - sp.start) : null;
         if (spEnd !== null && v.currentTime < spEnd - COVERAGE_EPSILON) {
             setPlayhead(sp.start + (v.currentTime - sp.rendered));
+            setTime(sp.start + (v.currentTime - sp.rendered));
             return;
         }
 
@@ -694,13 +707,15 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
             v.pause();
             if (spEnd !== null) { try { v.currentTime = spEnd; } catch { /* not seekable yet */ } }
             setPlayhead(next ? next.start : totalOf(segments));
+            setTime(next ? next.start : totalOf(segments));
             if (next) playSpanRef.current = i;
             return;
         }
         playSpanRef.current = i;
         setPlayhead(next.start);
+        setTime(next.start);
         try { v.currentTime = next.rendered; } catch { /* not seekable yet */ }
-    }, [coverage, dirty, segments]);
+    }, [coverage, dirty, segments, setTime]);
 
     const onClipTimeUpdate = useCallback((e) => stepPlayback(e.target), [stepPlayback]);
 
@@ -731,8 +746,9 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         const t = renderedToClip(e.target.currentTime);
         if (t === null) return;   // landed on material this edit dropped
         setPlayhead(t);
+        setTime(t);
         playSpanRef.current = spanIndexAt(t);
-    }, [dirty, renderedToClip, spanIndexAt]);
+    }, [dirty, renderedToClip, spanIndexAt, setTime]);
 
     // Refuse to roll from a span the file cannot show — same reason as above.
     const onClipPlay = useCallback((e) => {
@@ -776,6 +792,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
             const t = clampToCovered(raw, last, { path });
             last = t;
             setPlayhead(t);
+            setTime(t);
             // Not "is the file stale" but "does the file hold THIS instant" —
             // which is what keeps a trim navigable without a re-render.
             const r = clipToRendered(t);
@@ -1343,6 +1360,10 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                 className="w-full h-full object-contain"
                                 onTimeUpdate={onClipTimeUpdate}
                                 onSeeked={onClipSeeked}
+                                onLoadedMetadata={(e) => {
+                                    const rendered = clipToRendered(timeRef.current);
+                                    if (rendered !== null) { e.currentTarget.pause(); e.currentTarget.currentTime = rendered; setPlayhead(timeRef.current); }
+                                }}
                                 onPlay={onClipPlay}
                                 onPause={stopPlayLoop}
                             />

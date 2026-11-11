@@ -3,6 +3,7 @@ import { Loader2, Plus, Trash2, ArrowUp, ArrowDown, Wand2, Play, AlertTriangle, 
 import { getApiUrl } from '../config';
 import { apiFetch } from '../lib/api';
 import { SliderField, ToggleChip } from './TypographyControls';
+import { useWorkspace } from '../lib/workspace';
 
 // Workspace "Audio" tab: find clipping, build an effect chain from built-in
 // effects and the VST3/AU plugins installed here (audio_fx.py), listen A/B,
@@ -137,6 +138,7 @@ function BuiltinParams({ step, spec, onParams }) {
 }
 
 export default function AudioEditor({ jobId, clipIndex, onApplied }) {
+    const workspace = useWorkspace();
     const alive = useRef(true);
     const applyLock = useRef(false);
     const [rendering, setRendering] = useState(false);
@@ -195,7 +197,13 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
         const v = videoRef.current;
         if (!v) return;
         v.currentTime = t;
-        v.play().catch(() => {});
+        workspace.setTime(t);
+    };
+
+    const syncWorkspace = (v) => {
+        if (!v) return;
+        v.pause();
+        v.currentTime = Math.min(workspace.timeRef.current, Number.isFinite(v.duration) ? Math.max(0, v.duration - 0.01) : workspace.timeRef.current);
     };
 
     const update = (i, patch) => setChain((c) => c.map((s, j) => (j === i ? { ...s, ...patch } : s)));
@@ -265,8 +273,9 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
                 <div className="bg-black rounded-card border border-rule overflow-hidden aspect-[9/16] md:h-full md:min-h-0 max-h-[70vh] mx-auto">
                     {info && (
                         <video ref={videoRef} src={getApiUrl(info.source_url)} controls playsInline className="w-full h-full object-contain"
+                            onLoadedMetadata={(e) => syncWorkspace(e.currentTarget)}
                             onPlay={sync} onPause={sync} onSeeked={sync}
-                            onTimeUpdate={(e) => { setTime(e.currentTarget.currentTime); sync(); }} />
+                            onTimeUpdate={(e) => { setTime(e.currentTarget.currentTime); workspace.setTime(e.currentTarget.currentTime); sync(); }} />
                     )}
                     {preview && <audio ref={audioRef} src={getApiUrl(preview.url)} preload="auto" />}
                 </div>

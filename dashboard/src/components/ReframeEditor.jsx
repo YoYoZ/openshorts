@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { X, Loader2, Crosshair, RotateCcw, AlertCircle, Play, Pause, Scissors, Merge, ListTree, Wand2, Square } from 'lucide-react';
 import { getApiUrl } from '../config';
 import { apiJson } from '../lib/api';
+import { useWorkspace } from '../lib/workspace';
 
 // Manual reframing laid out like a non-linear editor.
 //
@@ -109,6 +110,7 @@ function drawOutput(ctx, v, W, H, mode, value, zone, geo) {
 }
 
 export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, onReframed, inline = false }) {
+    const { timeRef, setTime } = useWorkspace();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [data, setData] = useState(null);
@@ -178,7 +180,21 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
         const c = Math.min(Math.max(0, tt), Math.max(0, duration - 0.01));
         if (v) v.currentTime = c;
         setT(c);
-    }, [duration]);
+        setTime(c);
+    }, [duration, setTime]);
+
+    // Start at the shared playhead once the preview is there. A cached file
+    // can be ready before React listens for loadedmetadata, so check both.
+    const seekRef = useRef(seek);
+    seekRef.current = seek;
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v || !data) return undefined;
+        const go = () => seekRef.current(timeRef.current);
+        if (v.readyState >= 1) { go(); return undefined; }
+        v.addEventListener('loadedmetadata', go, { once: true });
+        return () => v.removeEventListener('loadedmetadata', go);
+    }, [data, timeRef]);
 
     const togglePlay = useCallback(() => {
         const v = videoRef.current;
@@ -197,7 +213,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
             if (v && cv) {
                 const s = drawRef.current;
                 const now = v.currentTime;
-                if (!v.paused) setT(now);
+                if (!v.paused) { setT(now); setTime(now); }
                 const z = s.zones.find((q) => now >= q.start && now < q.end) || s.zones[s.zones.length - 1];
                 const val = z ? s.overrides[z.index] : undefined;
                 drawOutput(cv.getContext('2d'), v, cv.width, cv.height, modeOf(val), val, z, s);
@@ -206,7 +222,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
         };
         raf = requestAnimationFrame(loop);
         return () => cancelAnimationFrame(raf);
-    }, []);
+    }, [setTime]);
 
     // ---- zones ----------------------------------------------------------
     const rezone = useCallback((next) => {
@@ -413,7 +429,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                                     style={{ aspectRatio: `${srcAspect}`, maxHeight: '100%', maxWidth: `calc((100vh - 360px) * ${srcAspect})` }}>
                                     <video ref={videoRef} src={getApiUrl(data.preview_url)} playsInline preload="auto"
                                         onPause={() => setPlaying(false)} onPlay={() => setPlaying(true)}
-                                        onLoadedMetadata={() => seek(0)}
+                                        
                                         className="absolute inset-0 w-full h-full object-contain" />
                                     {showsWindow && curMode !== 'auto' && (
                                         <>

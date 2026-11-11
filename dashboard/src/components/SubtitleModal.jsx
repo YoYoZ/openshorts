@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { alignEditedWords } from '../lib/alignWords';
+import { useWorkspace } from '../lib/workspace';
 // The Remotion player is the heaviest part of the bundle: load it when this
 // editor first opens, not with the app.
 const RemotionPreviewLazy = React.lazy(() => import('./RemotionPreview'));
@@ -123,6 +124,7 @@ const luminance = (hex) => {
 
 
 export default function SubtitleModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, applyPending = false, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
+    const workspace = useWorkspace();
     // Opens on the look the clip already has (the Default preset), so
     // "apply" without touching anything changes nothing.
     const [position, setPosition] = useState('bottom');
@@ -397,6 +399,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                             subtitles={subtitleConfig}
                             hook={existingHook || null}
                             seekTo={seekReq}
+                            initialTime={workspace.timeRef.current}
+                            onTime={workspace.setTime}
                         />
                     ) : (
                         <>

@@ -13,6 +13,7 @@ import WatermarkModal, { watermarkNoticeDismissed } from './WatermarkModal';
 import TikTokDraftNotice from './TikTokDraftNotice';
 import { useAuth } from '../contexts/AuthContext';
 import { renderInBrowser } from '../lib/renderInBrowser';
+import { useWorkspace } from '../lib/workspace';
 
 const QUIET_BTN = 'relative group flex flex-col items-center justify-center gap-1 py-2.5 sm:py-2 px-1 rounded-input border border-rule hover:bg-paper3 text-[11px] lowercase text-ink2 whitespace-nowrap transition-colors disabled:opacity-45 disabled:cursor-not-allowed';
 
@@ -45,6 +46,7 @@ const StepNo = ({ n, done }) => (
 );
 
 export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null, panel = null, onPanelClose = null, onOpenTab = null }) {
+    const workspace = useWorkspace();
     const alive = useRef(true);
     const renderLocks = useRef({ subtitle: false, hook: false });
     useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -68,6 +70,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [showWatermarkModal, setShowWatermarkModal] = useState(false);
     const { plan } = useAuth();
     const videoRef = React.useRef(null);
+    useEffect(() => {
+        if (focus && (panel === 'subs' || panel === 'hook')) videoRef.current?.pause();
+    }, [focus, panel]);
     // Pristine base clip (no burned subtitles/hook), stable regardless of how
     // clip.video_url mutates after server edits. Used as the compositing base
     // for the Remotion preview so it never stacks subtitles over an already-
@@ -955,8 +960,14 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     className="w-full h-full object-contain"
                     playsInline
                     onLoadedMetadata={(e) => {
+                        if (focus && !showBefore) {
+                            e.currentTarget.pause();
+                            e.currentTarget.currentTime = workspace.timeRef.current;
+                        }
                         if (e.target.videoWidth) setResolution(`${e.target.videoWidth}×${e.target.videoHeight}`);
                     }}
+                    onTimeUpdate={(e) => { if (focus && !showBefore) workspace.setTime(e.currentTarget.currentTime); }}
+                    onSeeked={(e) => { if (focus && !showBefore) workspace.setTime(e.currentTarget.currentTime); }}
                     onError={() => {
                         // The durable copy is unreachable (signature expired after an
                         // hour on an idle tab, object purged) → serve from the API for
@@ -978,7 +989,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     }}
                     onPause={() => onPause && onPause()}
                     onEnded={() => {
-                        if (videoRef.current) {
+                        if (!focus && videoRef.current) {
                             videoRef.current.currentTime = 0;
                             videoRef.current.play();
                         }

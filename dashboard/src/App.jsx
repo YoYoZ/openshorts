@@ -39,6 +39,7 @@ import Modal from './components/ui/Modal';
 import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
 import { track } from './lib/events';
+import { WorkspaceProvider } from './lib/workspace';
 
 // Screens and dialogs that only the hosted edition or rare paths show: loaded
 // when first rendered instead of in the startup bundle.
@@ -2637,6 +2638,7 @@ function App() {
         ];
         const backToClip = () => setWsTab('clip');
         return (
+          <WorkspaceProvider key={`${jobId}:${focusIdx}`} jobId={jobId} clipIndex={focusIdx}>
           <div className="fixed inset-0 z-40 app-bg flex flex-col animate-fade">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 sm:px-4 py-2.5 glass-bar shrink-0">
               <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs" title="back to the clip list (Esc)">
@@ -2778,6 +2780,7 @@ function App() {
               )}
             </div>
           </div>
+          </WorkspaceProvider>
         );
       })()}
 

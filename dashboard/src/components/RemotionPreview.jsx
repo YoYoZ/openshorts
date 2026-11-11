@@ -22,15 +22,33 @@ export default function RemotionPreview({
     effects = null,
     className = '',
     seekTo = null,          // { t: seconds, n: nonce }: jump there and pause
+    initialTime = null,
+    onTime = null,
 }) {
     const fps = 30;
     const playerRef = useRef(null);
+    const onTimeRef = useRef(onTime);
+    onTimeRef.current = onTime;
     useEffect(() => {
         const p = playerRef.current;
         if (!p || !seekTo) return;
         p.pause();
         p.seekTo(Math.max(0, Math.round(seekTo.t * fps)));
     }, [seekTo]);
+    // The shared workspace playhead: report frames back, and seek to it once
+    // the real length is known (the timeline is rebuilt when it is measured,
+    // which would undo an earlier seek). Frames before that seek are the
+    // player's own 0 and must not overwrite the shared time.
+    const seeded = useRef(initialTime === null);
+    useEffect(() => {
+        const player = playerRef.current;
+        if (!player) return undefined;
+        const update = (event) => {
+            if (seeded.current) onTimeRef.current?.(event?.detail?.frame / fps);
+        };
+        player.addEventListener('frameupdate', update);
+        return () => player.removeEventListener('frameupdate', update);
+    }, []);
     // The real length of the file being previewed. The caller's figure comes
     // from the clip's start/end, which is wrong for a trimmed clip made of
     // several pieces (start..end spans the gaps) and whenever the metadata and
@@ -50,6 +68,17 @@ export default function RemotionPreview({
         return () => { v.onloadedmetadata = null; v.removeAttribute('src'); v.load(); };
     }, [videoUrl]);
     const seconds = measured ?? durationInSeconds;
+    useEffect(() => {
+        const player = playerRef.current;
+        if (seeded.current || !player || (videoUrl && measured === null)) return;
+        if (Number.isFinite(initialTime)) {
+            player.pause();
+            player.seekTo(Math.max(0, Math.round(initialTime * fps)));
+        }
+        seeded.current = true;
+    // initialTime is read once per mount by design
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [measured, videoUrl]);
     const durationInFrames = Math.max(1, Math.floor(seconds * fps));
 
     const inputProps = useMemo(
