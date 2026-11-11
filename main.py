@@ -36,6 +36,7 @@ from ffmpeg_utils import (video_encode_args, audio_encode_args, cut_clip, QUALIT
                           QUALITY_FAST, METADATA_SCRUB)
 from dotenv import load_dotenv
 import json
+from jsonfile import write_json_atomic
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
@@ -2649,8 +2650,7 @@ if __name__ == '__main__':
             if source_subtitle_band:
                 clips_data['source_subtitle_band'] = source_subtitle_band
             metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
-            with open(metadata_file, 'w') as f:
-                json.dump(clips_data, f, indent=2)
+            write_json_atomic(metadata_file, clips_data, indent=2)
             print(f"   Saved metadata to {metadata_file}")
 
             # 5. Process clips in parallel: each worker cuts + renders one
@@ -2773,8 +2773,7 @@ if __name__ == '__main__':
             # Persist per-clip render results added by the workers (auto_hook)
             # so the editor can see what is already burned into each clip.
             if any('auto_hook' in c or 'hook_grounding' in c for c in shorts):
-                with open(metadata_file, 'w') as f:
-                    json.dump(clips_data, f, indent=2)
+                write_json_atomic(metadata_file, clips_data, indent=2)
 
     # Clean up original if requested
     if args.url and not args.keep_original and os.path.exists(input_video):

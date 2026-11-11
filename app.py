@@ -33,6 +33,7 @@ import recut
 import layout_ranges
 import watermarked
 import media_auth
+from jsonfile import write_json_atomic
 import render_ops
 
 load_dotenv()
@@ -951,8 +952,7 @@ def _unmark_local_job(job_id, clip_index, clean_filename):
             shorts = data.get('shorts', [])
             if clip_index < len(shorts):
                 shorts[clip_index]['video_url'] = url
-                with open(meta_path, 'w') as f:
-                    json.dump(data, f, indent=4)
+                write_json_atomic(meta_path, data, indent=4)
         except Exception as e:
             print(f"⚠️ Could not unmark metadata of {job_id}: {e}")
     watermarked.unmark_job(job_dir)
@@ -1447,8 +1447,7 @@ def _touch_manifest(job_id, now=None):
     m["instance"] = INSTANCE_ID
     m["pid"] = os.getpid()
     try:
-        with open(_manifest_path(job_id), "w") as f:
-            json.dump(m, f)
+        write_json_atomic(_manifest_path(job_id), m)
     except Exception as e:
         print(f"⚠️ Could not heartbeat manifest for {job_id}: {e}")
 
@@ -1676,8 +1675,7 @@ def _write_resume_manifest(job_id, cmd, priority, user_id, reservation_id, water
                            partial=None, source_cap_minutes=None, skip_statics=False):
     try:
         path = os.path.join(OUTPUT_DIR, job_id, _RESUME_FILE)
-        with open(path, "w") as f:
-            json.dump({
+        write_json_atomic(path, {
                 "cmd": cmd, "priority": priority,
                 "user_id": None if user_id is None else str(user_id),
                 "reservation_id": reservation_id,
@@ -1811,8 +1809,7 @@ def _resume_interrupted_jobs() -> set:
         m["attempts"] = attempts
         m["resumed_at"] = time.time()
         try:
-            with open(manifest_path, "w") as f:
-                json.dump(m, f)
+            write_json_atomic(manifest_path, m)
         except Exception:
             pass
 
@@ -4315,8 +4312,7 @@ async def youtube_upload_clip(req: YouTubeUploadRequest):
     meta_path, data = _clip_metadata(req.job_id)
     data["shorts"][req.clip_index]["youtube"] = record
     data["youtube_account"] = account   # the project keeps posting to this channel
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)  # ASCII-escaped: other readers open it without an encoding
+    write_json_atomic(meta_path, data, indent=2)
     job = jobs.get(req.job_id)
     if job and (job.get("result") or {}).get("clips") and req.clip_index < len(job["result"]["clips"]):
         job["result"]["clips"][req.clip_index]["youtube"] = record
@@ -4337,8 +4333,7 @@ async def set_clip_done(job_id: str, clip_index: int, req: ClipDoneRequest):
     if not (0 <= clip_index < len(clips)):
         raise HTTPException(status_code=404, detail="Clip not found")
     clips[clip_index]["done"] = bool(req.done)
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    write_json_atomic(meta_path, data, indent=2)
     job = jobs.get(job_id)
     mem = (job or {}).get("result", {}).get("clips") or []
     if clip_index < len(mem):
@@ -4374,8 +4369,7 @@ async def update_clip_meta(job_id: str, clip_index: int, req: ClipMetaUpdate):
     if req.rejected is not None:
         changes["rejected"] = bool(req.rejected)
     clips[clip_index].update(changes)
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    write_json_atomic(meta_path, data, indent=2)
     job = jobs.get(job_id)
     mem = (job or {}).get("result", {}).get("clips") or []
     if clip_index < len(mem):
@@ -4494,16 +4488,14 @@ async def clip_audio_apply(job_id: str, clip_index: int, req: AudioChainRequest,
     meta_path, data, clip, output_dir, base = _audio_clip(job_id, clip_index)
     chain = _audio_chain(req.chain)
     clip["audio_fx"] = {"chain": chain} if chain else None
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    write_json_atomic(meta_path, data, indent=2)
     name = await _with_audio(job_id, clip_index, base)
     if chain and name == base:
         raise HTTPException(status_code=500, detail="The audio chain failed; see the logs.")
     served = await _deliver(request, job_id, name)
     url = f"/videos/{job_id}/{served}"
     clip["video_url"] = url
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    write_json_atomic(meta_path, data, indent=2)
     mem = (jobs.get(job_id) or {}).get("result", {}).get("clips") or []
     if clip_index < len(mem):
         mem[clip_index].update({"video_url": url, "audio_fx": clip["audio_fx"]})
@@ -4624,8 +4616,7 @@ async def rewrite_clip_meta(job_id: str, clip_index: int, req: RewriteRequest):
         if req.save_title and result.get("title"):
             changes["video_title_for_youtube_short"] = result["title"].strip()[:100]
         target.update(changes)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(meta_path, data, indent=2)
         mem = (jobs.get(job_id) or {}).get("result", {}).get("clips") or []
         if clip_index < len(mem):
             mem[clip_index].update(changes)
@@ -5429,8 +5420,7 @@ async def edit_clip(
                 if req.clip_index < len(shorts):
                     shorts[req.clip_index]['video_url'] = new_video_url
                     meta['shorts'] = shorts
-                    with open(meta_files[0], 'w') as f:
-                        json.dump(meta, f, indent=4)
+                    write_json_atomic(meta_files[0], meta, indent=4)
         except Exception as e:
             print(f"⚠️ Failed to update metadata.json: {e}")
 
@@ -5776,8 +5766,7 @@ async def upload_caption_frames(job_id: str, clip_index: int, request: Request,
         for name in os.listdir(output_dir):
             if name.startswith(f"capframes_{clip_index}_") and name != folder:
                 shutil.rmtree(os.path.join(output_dir, name), ignore_errors=True)
-        with open(meta_files[0], "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(meta_files[0], data, indent=2)
     return {"success": True, "fingerprint": fingerprint}
 
 # Scene-listing builds write stable preview/thumbnail names per job; serialize
@@ -5944,8 +5933,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
             updates['caption_words'] = _words_for_cut(src_words, segments, transcript) or None
         clip.update(updates)
         data['shorts'] = clips
-        with open(json_files[0], 'w') as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(json_files[0], data, indent=2)
 
         # Hook, then captions, back on the clean base.
         final_path = await loop.run_in_executor(
@@ -5955,8 +5943,7 @@ async def _rerender_locked(req: RerenderRequest, request: Request, job):
         new_video_url = f"/videos/{req.job_id}/{served_name}"
         updates['video_url'] = new_video_url
         clip['video_url'] = new_video_url
-        with open(json_files[0], 'w') as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(json_files[0], data, indent=2)
         mem_clips = (job.get('result') or {}).get('clips') or []
         if req.clip_index < len(mem_clips):
             mem_clips[req.clip_index].update(updates)
@@ -6032,8 +6019,7 @@ async def create_clip(req: NewClipRequest, request: Request):
             clip["caption_style"] = dict(template["caption_style"])
         clips.append(clip)
         data["shorts"] = clips
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(meta_path, data, indent=2)
         mem_clips = (job.get("result") or {}).get("clips")
         if isinstance(mem_clips, list) and len(mem_clips) == index:
             mem_clips.append(dict(clip))
@@ -6049,8 +6035,7 @@ async def create_clip(req: NewClipRequest, request: Request):
             _, data = _clip_metadata(req.job_id)
             if len(data.get("shorts") or []) == index + 1:
                 data["shorts"].pop()
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                write_json_atomic(meta_path, data, indent=2)
             if isinstance(mem_clips, list) and len(mem_clips) == index + 1:
                 mem_clips.pop()
             raise
@@ -6492,8 +6477,7 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
         }
         clip.update(updates)
         data['shorts'] = clips
-        with open(json_files[0], 'w') as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(json_files[0], data, indent=2)
 
         final_path = await loop.run_in_executor(
             None, _rebuild_layers, req.job_id, req.clip_index,
@@ -6502,8 +6486,7 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
         new_video_url = f"/videos/{req.job_id}/{served_name}"
         updates['video_url'] = new_video_url
         clip['video_url'] = new_video_url
-        with open(json_files[0], 'w') as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(json_files[0], data, indent=2)
         mem_clips = (job.get('result') or {}).get('clips') or []
         if req.clip_index < len(mem_clips):
             mem_clips[req.clip_index].update(updates)
@@ -6931,9 +6914,8 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
             data['shorts'] = clips
             
             # Write back
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with subtitled video for clip {req.clip_index}")
+            write_json_atomic(json_files[0], data, indent=4)
+            print(f"✅ Metadata updated with subtitled video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
         # Non-critical, but good for persistence
@@ -7000,8 +6982,7 @@ async def remove_subtitles(req: RemoveSubtitlesRequest, request: Request):
     try:
         clips[req.clip_index]['video_url'] = new_url
         data['shorts'] = clips
-        with open(json_files[0], 'w') as f:
-            json.dump(data, f, indent=4)
+        write_json_atomic(json_files[0], data, indent=4)
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
 
@@ -7162,9 +7143,8 @@ async def add_hook(req: HookRequest, request: Request):
         if req.clip_index < len(clips):
             clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
             data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with hook video for clip {req.clip_index}")
+            write_json_atomic(json_files[0], data, indent=4)
+            print(f"✅ Metadata updated with hook video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
 
@@ -7273,9 +7253,8 @@ async def translate_clip(
         if req.clip_index < len(clips):
             clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
             data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with translated video for clip {req.clip_index}")
+            write_json_atomic(json_files[0], data, indent=4)
+            print(f"✅ Metadata updated with translated video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
 
