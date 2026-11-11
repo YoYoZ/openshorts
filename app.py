@@ -993,6 +993,34 @@ def _caption_inputs(job_id, clip_index):
     return clip, transcript, start, end
 
 
+def _caption_overlay_list(job_id, clip_index, clip, video_path, style=None, fingerprint=None,
+                          require_fingerprint=False):
+    overlay = clip.get('caption_overlay')
+    if require_fingerprint and overlay:
+        # The apply that rendered these frames names them by fingerprint: then
+        # the frames ARE this style, and the hash is restamped from the
+        # server's own caption_style (the browser's copy of the style never
+        # hashes the same: int vs float, omitted defaults), so later re-renders
+        # compare like with like.
+        if overlay.get('fingerprint') != fingerprint:
+            clip.pop('caption_overlay', None)
+            return None
+        if style is not None:
+            overlay['caption_style_hash'] = _caption_overlay_hash(style)
+    elif style is not None and overlay and overlay.get('caption_style_hash') != _caption_overlay_hash(style):
+        clip.pop('caption_overlay', None)
+        return None
+    # SPLIT captions live on the seam in ASS; Subtitles.tsx has no seam layout.
+    seams = layout_ranges.split_ranges(clip.get('layout_ranges') or layout_ranges.read(video_path))
+    if not _caption_overlay_is_valid(overlay, clip, seams):
+        if overlay:
+            clip.pop('caption_overlay', None)
+        return None
+    directory = os.path.join(OUTPUT_DIR, job_id, overlay['dir'])
+    list_path = os.path.join(directory, f"concat_{uuid.uuid4().hex[:8]}.txt")
+    return _build_caption_concat_list(overlay['frames'], overlay['duration'], directory, list_path)
+
+
 def _reapply_captions(job_id, clip_index, video_path):
     """Re-burn the clip's captions onto a freshly derived file.
 
@@ -1010,6 +1038,11 @@ def _reapply_captions(job_id, clip_index, video_path):
             return None
         clip, transcript, start, end = inputs
         if clip.get('caption_style'):
+            overlay_list = _caption_overlay_list(job_id, clip_index, clip, video_path)
+            if overlay_list:
+                out_path = os.path.join(os.path.dirname(video_path), f"subtitled_{int(time.time())}_{os.path.basename(video_path)}")
+                burn_subtitles(video_path, "", out_path, overlay_list_path=overlay_list)
+                return out_path
             return _restyle_captions(video_path, transcript, start, end,
                                      clip['caption_style'],
                                      clip.get('layout_ranges'))
@@ -1029,6 +1062,9 @@ def _caption_plan(job_id, clip_index, video_path):
     if not inputs:
         return None
     clip, transcript, start, end = inputs
+    overlay_list = _caption_overlay_list(job_id, clip_index, clip, video_path)
+    if overlay_list:
+        return ("overlay", overlay_list)
     if not clip.get('caption_style'):
         import main as _main
         return _main.auto_caption_clip(video_path, transcript, start, end, plan_only=True)
@@ -1061,10 +1097,15 @@ def _hook_with_captions(job_id, clip_index, video_path, output_path, captions, *
             print(f"⚠️  Could not plan captions for the hook pass: {e}")
             plan = None
         if plan:
-            vf, generation_id = plan
-            captioned = os.path.join(os.path.dirname(output_path),
-                                     f"subtitled_{generation_id}_{os.path.basename(output_path)}")
-            also = (vf, captioned)
+            if plan[0] == "overlay":
+                captioned = os.path.join(os.path.dirname(output_path),
+                                         f"subtitled_{int(time.time())}_{os.path.basename(output_path)}")
+                also = {"concat_list": plan[1], "output": captioned}
+            else:
+                vf, generation_id = plan
+                captioned = os.path.join(os.path.dirname(output_path),
+                                         f"subtitled_{generation_id}_{os.path.basename(output_path)}")
+                also = (vf, captioned)
     if also:
         try:
             result = add_hook_to_video(video_path, output_path=output_path, also=also, **hook)
@@ -1230,13 +1271,13 @@ def _caption_style_file(video_path, sub_path, transcript, start, end,
 
 
 def _burn_caption_style(video_path, out_path, sub_path, transcript, start, end,
-                        style, split_ranges=None):
+                        style, split_ranges=None, overlay_list=None):
     """Generate the caption file for ``style`` and burn it onto
     ``video_path``. Returns False when no words fall in the range."""
     burn = _caption_style_file(video_path, sub_path, transcript, start, end, style, split_ranges)
     if not burn:
         return False
-    burn_subtitles(video_path, sub_path, out_path, **burn)
+    burn_subtitles(video_path, sub_path, out_path, overlay_list_path=overlay_list, **burn)
     return True
 
 
@@ -5221,6 +5262,9 @@ async def _ensure_job_files(job_id: str, request: Request) -> bool:
 
 from subtitles import generate_srt, generate_ass, burn_subtitles, subtitles_filter, generate_srt_from_video, CAPTION_PRESETS, frame_aspect_of
 from hooks import add_hook_to_video
+from caption_overlays import stable_hash as _caption_overlay_hash
+from caption_overlays import overlay_is_valid as _caption_overlay_is_valid
+from caption_overlays import build_concat_list as _build_caption_concat_list
 from translate import translate_video, get_supported_languages
 from thumbnail import (analyze_video_for_titles, refine_titles, generate_thumbnail,
                        generate_youtube_description, extract_face_frames)
@@ -5451,6 +5495,7 @@ class SubtitleRequest(BaseModel):
     # transcript). Without words and without this, saved edits are kept: a
     # restyle of every clip must not wipe the text edits made on each.
     reset_words: Optional[bool] = False
+    caption_frame_fingerprint: Optional[str] = None
 
 
 @app.get("/api/clip/{job_id}/{clip_index}/transcript")
@@ -5664,6 +5709,76 @@ _FRAMING_STRATEGIES = {"auto": None, "full": "WIDE", "track": "TRACK"}
 # One lock per job (same pattern as _restore_locks): rerenders on the same job
 # share metadata.json and the canonical files, so they must not interleave.
 _rerender_locks: Dict[str, asyncio.Lock] = {}
+
+
+@app.post("/api/clip/{job_id}/{clip_index}/caption-frames")
+async def upload_caption_frames(job_id: str, clip_index: int, request: Request,
+                                meta: str = Form(...), files: List[UploadFile] = File(...)):
+    """Store transparent Remotion caption frames for the next single-clip apply."""
+    await _ensure_job_files(job_id, request)
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await _assert_job_owner(request, jobs[job_id])
+    if not files or len(files) > 2000:
+        raise HTTPException(status_code=400, detail="Caption frames must contain 1 to 2000 PNG files")
+    try:
+        info = json.loads(meta)
+        frames = info["frames"]
+        fingerprint = info["fingerprint"]
+        duration = float(info["duration"])
+        style = info["caption_style"]
+        if not isinstance(frames, list) or len(frames) != len(files) or not isinstance(style, dict):
+            raise ValueError("frame metadata mismatch")
+        if not re.fullmatch(r"[0-9a-f]{40}", fingerprint) or not 0 < duration <= 3600:
+            raise ValueError("invalid fingerprint or duration")
+        total_bytes = 0
+        for item, upload in zip(frames, files):
+            if item.get("name") != os.path.basename(item.get("name", "")) or not re.fullmatch(r"frame_\d+\.png", item["name"]):
+                raise ValueError("invalid frame name")
+            start, end = float(item["start"]), float(item["end"])
+            if not 0 <= start < end <= duration or upload.filename != item["name"]:
+                raise ValueError("invalid frame timing or name")
+        if len({item["name"] for item in frames}) != len(frames):
+            raise ValueError("duplicate frame name")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid caption frame metadata") from exc
+
+    output_dir = os.path.join(OUTPUT_DIR, job_id)
+    meta_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+    if not meta_files:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    lock = _rerender_locks.setdefault(job_id, asyncio.Lock())
+    async with lock:
+        with open(meta_files[0], encoding="utf-8") as f:
+            data = json.load(f)
+        clips = data.get("shorts", [])
+        if clip_index < 0 or clip_index >= len(clips):
+            raise HTTPException(status_code=404, detail="Clip not found")
+        clip = clips[clip_index]
+        recipe = (clip.get("recipe") or {}).get("segments")
+        folder = f"capframes_{clip_index}_{fingerprint[:12]}"
+        dest = os.path.join(output_dir, folder)
+        os.makedirs(dest, exist_ok=True)
+        for item, upload in zip(frames, files):
+            content = await upload.read(15 * 1024 * 1024 + 1)
+            total_bytes += len(content)
+            if len(content) > 15 * 1024 * 1024 or total_bytes > 300 * 1024 * 1024 or not content.startswith(b"\x89PNG\r\n\x1a\n"):
+                shutil.rmtree(dest, ignore_errors=True)
+                raise HTTPException(status_code=400, detail="Invalid or oversized PNG caption frame")
+            with open(os.path.join(dest, item["name"]), "wb") as f:
+                f.write(content)
+        old = clip.get("caption_overlay")
+        clip["caption_overlay"] = {
+            "dir": folder, "fingerprint": fingerprint, "frames": frames, "duration": duration,
+            "recipe": recipe, "caption_style": style,
+            "caption_style_hash": _caption_overlay_hash(style),
+        }
+        for name in os.listdir(output_dir):
+            if name.startswith(f"capframes_{clip_index}_") and name != folder:
+                shutil.rmtree(os.path.join(output_dir, name), ignore_errors=True)
+        with open(meta_files[0], "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    return {"success": True, "fingerprint": fingerprint}
 
 # Scene-listing builds write stable preview/thumbnail names per job; serialize
 # them so overlapping editor opens don't tear each other's files.
@@ -6764,14 +6879,20 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
                                alignment=req.position, fontsize=req.font_size,
                                font_name=req.font_name, font_color=req.font_color,
                                border_color=req.border_color, border_width=req.border_width,
-                               bg_color=req.bg_color, bg_opacity=req.bg_opacity)
+                               bg_color=req.bg_color, bg_opacity=req.bg_opacity,
+                               overlay_list_path=_caption_overlay_list(req.job_id, req.clip_index,
+                                   {**clip_data, 'caption_style': caption_style}, input_path, style=caption_style,
+                                   fingerprint=req.caption_frame_fingerprint, require_fingerprint=True))
             await loop.run_in_executor(None, run_burn)
         else:
             # Same code path the hook / edit / recut re-burn uses, so the look
             # recorded below is the look that was burned here.
             success = await asyncio.get_event_loop().run_in_executor(
                 None, _burn_caption_style, input_path, output_path, srt_path,
-                sub_transcript, sub_start, sub_end, caption_style, seam_ranges)
+                sub_transcript, sub_start, sub_end, caption_style, seam_ranges,
+                _caption_overlay_list(req.job_id, req.clip_index,
+                    {**clip_data, 'caption_style': caption_style}, input_path, style=caption_style,
+                    fingerprint=req.caption_frame_fingerprint, require_fingerprint=True))
             if not success:
                 raise HTTPException(status_code=400, detail="No words found for this clip range.")
         

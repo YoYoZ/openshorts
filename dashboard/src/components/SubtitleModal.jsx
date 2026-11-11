@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { alignEditedWords } from '../lib/alignWords';
 import { useWorkspace } from '../lib/workspace';
+import { renderCaptionFrames } from '../lib/captionFrames';
 // The Remotion player is the heaviest part of the bundle: load it when this
 // editor first opens, not with the app.
 const RemotionPreviewLazy = React.lazy(() => import('./RemotionPreview'));
@@ -217,6 +218,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     const [durationSec, setDurationSec] = useState(30);
     const [captionsLoading, setCaptionsLoading] = useState(false);
     const [useRemotionPreview, setUseRemotionPreview] = useState(false);
+    const [frameProgress, setFrameProgress] = useState(null);
 
     // Unapplied edits (text and look) survive closing the editor: they are
     // kept per clip in localStorage and win over the server copy on reopen.
@@ -314,6 +316,43 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
     const handleTextEdit = (newText) => {
         setEditableText(newText);
         setCaptions(alignEditedWords(originalCaptions, newText));
+    };
+
+    const applyThisClip = async (styleOptions) => {
+        clearDraft();
+        let captionFramesUploaded = false;
+        let captionFrameFingerprint = null;
+        if (useRemotionPreview && captions.length && jobId && clipIndex !== undefined) {
+            setFrameProgress({ done: 0, total: 0 });
+            try {
+                const { fingerprint, frames } = await renderCaptionFrames({
+                    subtitles: subtitleConfig,
+                    durationInSeconds: durationSec,
+                    onProgress: (done, total) => setFrameProgress({ done, total }),
+                });
+                captionFrameFingerprint = fingerprint;
+                const body = new FormData();
+                const entries = frames.map((frame, i) => ({ start: frame.start, end: frame.end, name: `frame_${i}.png` }));
+                body.append('meta', JSON.stringify({ fingerprint, duration: durationSec, frames: entries, caption_style: {
+                    style: styleOptions.style, position: styleOptions.position, font_size: styleOptions.fontSize,
+                    font_name: styleOptions.fontName, font_color: styleOptions.fontColor, border_color: styleOptions.borderColor,
+                    border_width: styleOptions.borderWidth, bg_color: styleOptions.bgColor, bg_opacity: styleOptions.bgOpacity,
+                    highlight_color: styleOptions.highlightColor, effect: styleOptions.effect, base_opacity: styleOptions.baseOpacity,
+                    uppercase: styleOptions.uppercase, reveal: styleOptions.reveal, shadow: styleOptions.shadow,
+                    max_chars: styleOptions.maxChars, max_duration: styleOptions.maxDuration,
+                    bold: styleOptions.bold, italic: styleOptions.italic, letter_spacing: styleOptions.letterSpacing,
+                } }));
+                frames.forEach((frame, i) => body.append('files', frame.blob, entries[i].name));
+                const upload = await apiFetch(`/api/clip/${jobId}/${clipIndex}/caption-frames`, { method: 'POST', body });
+                if (!upload.ok) throw new Error(`upload failed (${upload.status})`);
+                captionFramesUploaded = true;
+            } catch (error) {
+                console.warn('Exact caption frame preparation failed; applying with ASS fallback.', error);
+            } finally {
+                setFrameProgress(null);
+            }
+        }
+        onGenerate({ ...styleOptions, captionFramesUploaded, captionFrameFingerprint });
     };
 
     if (!isOpen) return null;
@@ -646,7 +685,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                             cancel
                                         </button>
                                         <button
-                                            onClick={() => { clearDraft(); onGenerate(styleOptions); }}
+                                            onClick={() => applyThisClip(styleOptions)}
                                             disabled={isProcessing || applyPending}
                                             title={applyPending ? 'a subtitle render is already running for this clip' : undefined}
                                             className="btn-primary flex-1"
@@ -655,6 +694,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                             {(isProcessing && !bulkRunning) ? 'generating...' : 'apply to this clip'}
                                         </button>
                                     </div>
+                                    {frameProgress && <p className="readout normal-case">preparing exact captions… {frameProgress.done}/{frameProgress.total || '…'}</p>}
                                     {onApplyAll && bulkCount > 1 && (
                                         <button
                                             onClick={() => onApplyAll({ ...styleOptions, captions: null })}

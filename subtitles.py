@@ -935,7 +935,7 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
                    font_name="Verdana", font_color="#FFFFFF",
                    border_color="#000000", border_width=2,
                    bg_color="#000000", bg_opacity=0.0,
-                   bold=True, italic=False, letter_spacing=0.0):
+                   bold=True, italic=False, letter_spacing=0.0, overlay_list_path=None):
     """
     Burns subtitles into the video using FFmpeg.
     Supports two modes:
@@ -948,7 +948,13 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
                           bg_color=bg_color, bg_opacity=bg_opacity,
                           bold=bold, italic=italic, letter_spacing=letter_spacing)
 
-    cmd = [
+    if overlay_list_path:
+        cmd = ['ffmpeg', '-y', '-i', video_path, '-f', 'concat', '-safe', '0', '-i', overlay_list_path,
+               '-filter_complex', '[1:v]format=rgba[raw];[raw][0:v]scale2ref[cap][base];[base][cap]overlay=0:0:format=auto',
+               '-c:a', 'copy', *video_encode_args(QUALITY), *METADATA_SCRUB,
+               '-movflags', '+faststart', output_path]
+    else:
+        cmd = [
         'ffmpeg', '-y',
         '-i', video_path,
         '-vf', vf,
@@ -957,7 +963,7 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
         *METADATA_SCRUB,
         '-movflags', '+faststart',
         output_path
-    ]
+        ]
 
     _log(f"🎬 Burning subtitles: {' '.join(cmd)}")
     result = render_ops.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

@@ -569,7 +569,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             // Karaoke styles are burned server-side (ASS word-highlight render);
             // the in-browser Remotion path only handles classic styles, and only
             // when the server file has no burned-in content to preserve.
-            if (options.remotion && options.style !== 'karaoke' && !hasServerBurns) {
+            if (options.remotion && options.style !== 'karaoke' && !hasServerBurns && !options.captionFramesUploaded) {
                 // Accumulate layer and render all layers together
                 const newLayers = { ...activeLayers, subtitles: options.remotion };
                 setActiveLayers(newLayers);
@@ -615,6 +615,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     letter_spacing: options.letterSpacing || 0,
                     max_chars: options.maxChars ?? null,
                     max_duration: options.maxDuration ?? null,
+                    caption_frame_fingerprint: options.captionFrameFingerprint || null,
                     input_filename: serverVideoFile,
                     // Edited caption text (clip-relative ms); null = server
                     // regenerates from the transcript as before.

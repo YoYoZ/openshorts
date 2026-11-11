@@ -592,7 +592,20 @@ def add_hook_to_video(video_path, text, output_path, position="top", font_scale=
                    + (f":enable='between(t,0,{float(duration)})'" if duration else ""))
         tail = ['-c:a', 'copy', *video_encode_args(QUALITY), *METADATA_SCRUB,
                 '-movflags', '+faststart']
-        if also:
+        if also and isinstance(also, dict):
+            list_path, extra_path = also["concat_list"], also["output"]
+            # Hook first, then both outputs come from the HOOKED picture: the
+            # plain hooked file, and the same with the caption frames on top
+            # (frames sized to the video by scale2ref).
+            complex_filter = (f"{overlay}[h];[h]split=2[hookout][h2];"
+                              "[2:v]format=rgba[raw];[raw][h2]scale2ref[cap][base];"
+                              "[base][cap]overlay=0:0:format=auto[sub]")
+            ffmpeg_cmd = ['ffmpeg', '-y', '-i', video_path, '-i', img_path,
+                          '-f', 'concat', '-safe', '0', '-i', list_path,
+                          '-filter_complex', complex_filter,
+                          '-map', '[hookout]', '-map', '0:a?', *tail, output_path,
+                          '-map', '[sub]', '-map', '0:a?', *tail, extra_path]
+        elif also:
             extra_vf, extra_path = also
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
