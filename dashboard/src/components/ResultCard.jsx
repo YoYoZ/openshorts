@@ -88,6 +88,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     // YOUTUBE / DESCRIPTION fields): while one has focus it is "editing" too.
     const [inlineEdit, setInlineEdit] = useState(false);
     editingRef.current = editingMeta || inlineEdit;
+    // Title and description are edited in place wherever there is room for
+    // them: the workspace and the project page's side card.
+    const inlineMeta = focus || stacked;
     useEffect(() => {
         if (editingRef.current) return;
         const t = clip.video_title_for_youtube_short || '';
@@ -339,8 +342,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [showHookModal, setShowHookModal] = useState(false);
     const [showChecks, setShowChecks] = useState(false);
     // An editor shown as a workspace tab returns to the clip tab when it is done.
-    const closeSubtitleEditor = () => { setShowSubtitleModal(false); if (panel === 'subs') onPanelClose?.(); };
-    const closeHookEditor = () => { setShowHookModal(false); if (panel === 'hook') onPanelClose?.(); };
+    // After a save: the modal closes, but a workspace panel stays where it is
+    // (the user moves on with "next step", not by being thrown back to Clip).
+    const closeSubtitleEditor = () => setShowSubtitleModal(false);
+    const closeHookEditor = () => setShowHookModal(false);
     const [showTranslateModal, setShowTranslateModal] = useState(false);
     const [editError, setEditError] = useState(null);
 
@@ -1098,7 +1103,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 <div className="flex-1 min-h-0 space-y-2 mb-4">
                     <div className="bg-black/25 rounded-input px-3 py-2 border border-rule flex items-center gap-2 min-w-0 overflow-hidden">
                         <span className="eyebrow shrink-0">YOUTUBE</span>
-                        {focus ? (
+                        {inlineMeta ? (
                             <input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)}
                                 onFocus={() => setInlineEdit(true)}
                                 onBlur={() => { setInlineEdit(false); if (metaDirty) saveMeta({ close: false }); }}
@@ -1110,7 +1115,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             </p>
                         )}
                         <button
-                            onClick={() => handleCopy('youtube', (focus ? title : clip.video_title_for_youtube_short) || "Viral Short Video")}
+                            onClick={() => handleCopy('youtube', (inlineMeta ? title : clip.video_title_for_youtube_short) || "Viral Short Video")}
                             aria-label="copy youtube title"
                             className="p-1 rounded-full text-muted hover:text-brass transition-colors shrink-0"
                         >
@@ -1120,9 +1125,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
                     {/* In the workspace there is a whole column of room: show the
                         description in full instead of one clipped line. */}
-                    <div className={`bg-black/25 rounded-input px-3 py-2 border border-rule flex gap-2 min-w-0 overflow-hidden ${focus ? 'items-start' : 'items-center'}`}>
-                        <span className={`eyebrow shrink-0 ${focus ? 'mt-0.5' : ''}`}>{focus ? 'DESCRIPTION' : 'TIKTOK · IG'}</span>
-                        {focus ? (
+                    <div className={`bg-black/25 rounded-input px-3 py-2 border border-rule flex gap-2 min-w-0 overflow-hidden ${inlineMeta ? 'items-start' : 'items-center'}`}>
+                        <span className={`eyebrow shrink-0 ${inlineMeta ? 'mt-0.5' : ''}`}>{inlineMeta ? 'DESCRIPTION' : 'TIKTOK · IG'}</span>
+                        {inlineMeta ? (
                             <textarea value={desc} onChange={(e) => setDesc(e.target.value)}
                                 onFocus={() => setInlineEdit(true)}
                                 onBlur={() => { setInlineEdit(false); if (metaDirty) saveMeta({ close: false }); }}
@@ -1135,7 +1140,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             </p>
                         )}
                         <button
-                            onClick={() => handleCopy('caption', (focus ? desc : (clip.video_description_for_tiktok || clip.video_description_for_instagram)))}
+                            onClick={() => handleCopy('caption', (inlineMeta ? desc : (clip.video_description_for_tiktok || clip.video_description_for_instagram)))}
                             aria-label="copy caption"
                             className="p-1 rounded-full text-muted hover:text-brass transition-colors shrink-0"
                         >
@@ -1143,7 +1148,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         </button>
                     </div>
 
-                    {focus && (
+                    {inlineMeta && (
                         <p className="readout normal-case text-[11px] -mt-1">
                             {metaBusy === 'save' ? 'saving…' : metaDirty ? 'unsaved' : 'click to edit · saves automatically'}
                         </p>

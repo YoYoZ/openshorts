@@ -1322,7 +1322,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                     height-bound video, and that width is worth more to the source.
                     With the source away it takes everything, which is what gives
                     the clip track its full precision back. */}
-                <div className={`flex flex-col min-h-0 gap-2 ${sourceOpen ? 'xl:w-[26rem] 2xl:w-[30rem] xl:shrink-0' : 'flex-1'}`}>
+                <div className={`flex flex-col min-h-0 gap-2 xl:order-first ${sourceOpen ? 'xl:w-[26rem] 2xl:w-[30rem] xl:shrink-0' : 'flex-1'}`}>
                     <div className="flex items-center justify-between gap-2 shrink-0">
                         <p className="eyebrow">Program</p>
                         {dirty && (

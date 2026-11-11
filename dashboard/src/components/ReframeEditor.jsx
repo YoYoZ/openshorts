@@ -354,7 +354,8 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                 body: JSON.stringify({ job_id: jobId, clip_index: clipIndex, crop_overrides: payload }),
             });
             if (onReframed) onReframed(clipIndex, res);
-            onClose();
+            if (inline) setCutsChanged(false);   // the workspace tab stays open
+            else onClose();
         } catch (e) {
             setError(e?.message || 'The re-render failed.');
         } finally {
@@ -431,7 +432,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                                     })}
                                 </div>
                             </div>
-                            <div className="shrink-0 flex flex-col items-center gap-2">
+                            <div className="shrink-0 flex flex-col items-center gap-2 order-first">
                                 <canvas ref={canvasRef} width={OUT_W} height={Math.round(OUT_W / outAspect)}
                                     className="rounded-input border border-rule bg-black"
                                     style={{ width: OUT_W, maxHeight: 'calc(100vh - 380px)', objectFit: 'contain' }} />

@@ -2645,6 +2645,19 @@ function App() {
                 })}
               </nav>
               <div className="flex gap-1.5 ml-auto sm:ml-0">
+                {(() => {
+                  // The editing steps in order; "next step" walks them.
+                  const flow = ['trim', 'frame', 'subs', 'hook', 'audio', 'check'];
+                  const i = flow.indexOf(wsTab);
+                  const nextId = i < 0 ? flow[0] : flow[i + 1];
+                  const nextTab = tabs.find(([id]) => id === nextId);
+                  return nextTab ? (
+                    <button type="button" onClick={() => setWsTab(nextId)} className="btn-primary px-3 py-1.5 text-xs"
+                      title={`go to ${nextTab[1]} (${nextTab[2]})`}>
+                      {nextTab[1]} <ChevronRight size={14} />
+                    </button>
+                  ) : null;
+                })()}
                 {/* Done for the whole clip, from any tab (same as O on the Clip tab). */}
                 <button type="button" onClick={() => toggleClipDone(focusIdx, !clip.done)} aria-pressed={!!clip.done}
                   title={clip.done ? 'marked done: click to reopen' : 'mark this clip done'}

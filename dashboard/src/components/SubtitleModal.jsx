@@ -298,6 +298,17 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
 
     // When the user edits text, keep every untouched word on its own timestamp
     // and re-time only what changed (see lib/alignWords).
+    // The preview follows the caret: the word being edited is on screen.
+    const [seekReq, setSeekReq] = useState(null);
+    const followCaret = (e) => {
+        const text = e.target.value;
+        const pos = e.target.selectionStart ?? 0;
+        const before = text.slice(0, pos).split(/\s+/).filter(Boolean).length;
+        const inWord = pos > 0 && !/\s/.test(text[pos - 1]);
+        const c = captions[Math.max(0, inWord ? before - 1 : before)];
+        if (c && typeof c.startMs === 'number') setSeekReq({ t: c.startMs / 1000, n: Date.now() });
+    };
+
     const handleTextEdit = (newText) => {
         setEditableText(newText);
         setCaptions(alignEditedWords(originalCaptions, newText));
@@ -385,6 +396,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                             durationInSeconds={durationSec}
                             subtitles={subtitleConfig}
                             hook={existingHook || null}
+                            seekTo={seekReq}
                         />
                     ) : (
                         <>
@@ -529,6 +541,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                     <textarea
                                         value={editableText}
                                         onChange={(e) => handleTextEdit(e.target.value)}
+                                        onSelect={followCaret}
                                         rows={5}
                                         dir="auto"
                                         className="input-field resize-none leading-relaxed animate-fade"
@@ -679,6 +692,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                         <textarea
                             value={editableText}
                             onChange={(e) => handleTextEdit(e.target.value)}
+                            onSelect={followCaret}
                             dir="auto"
                             spellCheck
                             className="input-field resize-none leading-relaxed text-[15px] flex-1 min-h-[240px]"

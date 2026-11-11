@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Player } from '@remotion/player';
 import { ShortVideo } from '../remotion/compositions/ShortVideo';
 
@@ -21,8 +21,16 @@ export default function RemotionPreview({
     hook = null,
     effects = null,
     className = '',
+    seekTo = null,          // { t: seconds, n: nonce }: jump there and pause
 }) {
     const fps = 30;
+    const playerRef = useRef(null);
+    useEffect(() => {
+        const p = playerRef.current;
+        if (!p || !seekTo) return;
+        p.pause();
+        p.seekTo(Math.max(0, Math.round(seekTo.t * fps)));
+    }, [seekTo]);
     // The real length of the file being previewed. The caller's figure comes
     // from the clip's start/end, which is wrong for a trimmed clip made of
     // several pieces (start..end spans the gaps) and whenever the metadata and
@@ -61,6 +69,7 @@ export default function RemotionPreview({
     return (
         <div className={`w-full h-full ${className}`}>
             <Player
+                ref={playerRef}
                 component={ShortVideo}
                 inputProps={inputProps}
                 durationInFrames={durationInFrames}
@@ -72,7 +81,6 @@ export default function RemotionPreview({
                     height: '100%',
                 }}
                 controls
-                autoPlay
                 loop
             />
         </div>
