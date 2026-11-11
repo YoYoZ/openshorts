@@ -137,7 +137,7 @@ function BuiltinParams({ step, spec, onParams }) {
     );
 }
 
-export default function AudioEditor({ jobId, clipIndex, onApplied }) {
+export default function AudioEditor({ jobId, clipIndex, onApplied, shell = false }) {
     const workspace = useWorkspace();
     const alive = useRef(true);
     const applyLock = useRef(false);
@@ -270,7 +270,7 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
         <div className="h-full flex flex-col md:flex-row gap-6 p-3 sm:p-6 min-h-0">
             {/* Preview + what is wrong */}
             <div className="flex flex-col gap-3 md:h-full md:min-h-0 md:w-auto md:max-w-[36%] shrink-0">
-                <div className="bg-black rounded-card border border-rule overflow-hidden aspect-[9/16] md:h-full md:min-h-0 max-h-[70vh] mx-auto">
+                <div className={`bg-black rounded-card border border-rule overflow-hidden aspect-[9/16] md:h-full md:min-h-0 max-h-[70vh] mx-auto relative ${shell ? 'invisible' : ''}`}>
                     {info && (
                         <video ref={videoRef} src={getApiUrl(info.source_url)} controls playsInline className="w-full h-full object-contain"
                             onLoadedMetadata={(e) => syncWorkspace(e.currentTarget)}

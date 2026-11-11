@@ -45,7 +45,7 @@ const StepNo = ({ n, done }) => (
     <span className={`absolute top-1 left-1.5 readout text-[9px] ${done ? 'text-ok' : 'text-brass'}`}>{done ? `${n}✓` : n}</span>
 );
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null, panel = null, onPanelClose = null, onOpenTab = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, shell = false, onHookOverlay, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null, panel = null, onPanelClose = null, onOpenTab = null }) {
     const workspace = useWorkspace();
     const alive = useRef(true);
     const renderLocks = useRef({ subtitle: false, hook: false });
@@ -951,7 +951,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 which pushed the title, captions and every action off-screen.
                 Capping the height and centring keeps the whole card scannable
                 without letterboxing the clip. */}
-            <div className={`bg-black relative shrink-0 aspect-[9/16] group/video ${panel === 'subs' || panel === 'hook' ? 'hidden' : ''} ${stacked
+            {!shell && <div className={`bg-black relative shrink-0 aspect-[9/16] group/video ${panel === 'subs' || panel === 'hook' ? 'hidden' : ''} ${stacked
                 ? 'w-full max-w-[min(300px,calc(52vh*0.5625))] mx-auto mt-4 rounded-input overflow-hidden'
                 : `w-full max-w-[calc(64vh*0.5625)] md:max-w-none mx-auto md:mx-0 ${focus ? 'md:h-full md:w-auto' : 'md:w-[236px] md:aspect-auto'}`}`}>
                 <video
@@ -1063,7 +1063,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     onBusyChange={setServerBusy}
                     fallbackLabel={isEditing ? 'auto edit' : isSubtitling ? 'burning subtitles' : isHooking ? 'adding hook' : null}
                 />
-            </div>
+            </div>}
 
             {/* Right: Content & Details */}
             <div className={`flex-1 p-4 md:p-5 flex flex-col overflow-hidden min-w-0 ${panel ? 'hidden' : ''}`}>
@@ -1474,6 +1474,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
             <SubtitleModal
                 inline={panel === 'subs'}
+                shell={shell}
                 isOpen={showSubtitleModal || panel === 'subs'}
                 onClose={panel === 'subs' ? () => onPanelClose?.() : () => setShowSubtitleModal(false)}
                 onGenerate={handleSubtitle}
@@ -1504,6 +1505,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             />
             <HookModal
                 inline={panel === 'hook'}
+                shell={shell}
+                onHookOverlay={onHookOverlay}
                 isOpen={showHookModal || panel === 'hook'}
                 onClose={panel === 'hook' ? () => onPanelClose?.() : () => setShowHookModal(false)}
                 onGenerate={handleHook}

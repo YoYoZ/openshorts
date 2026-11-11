@@ -4221,6 +4221,30 @@ async def youtube_project_account(job_id: str):
     return {"account": data.get("youtube_account")}
 
 
+@app.post("/api/jobs/{job_id}/repunctuate")
+async def repunctuate_project(job_id: str, request: Request):
+    """Restore punctuation in an existing project's transcript."""
+    if not _UUID_DIR.match(job_id):
+        raise HTTPException(status_code=400, detail="Bad project id")
+    await _ensure_job_files(job_id, request)
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await _assert_job_owner(request, job)
+    lock = _rerender_locks.setdefault(job_id, asyncio.Lock())
+    async with lock:
+        meta_path, data = _clip_metadata(job_id)
+        transcript = data.get("transcript")
+        if not isinstance(transcript, dict):
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        import punctuation
+        transcript, report = await asyncio.to_thread(
+            punctuation.restore, transcript, transcript.get("language"))
+        data["transcript"] = transcript
+        write_json_atomic(meta_path, data, indent=2)
+        return report
+
+
 @app.post("/api/youtube/upload")
 async def youtube_upload_clip(req: YouTubeUploadRequest):
     import urllib.parse

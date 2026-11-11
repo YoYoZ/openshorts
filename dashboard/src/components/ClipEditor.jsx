@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useReducer, useRef, useCallback, useMemo, useDeferredValue } from 'react';
+import { useClipDraft } from '../lib/clipDraft';
 import {
     X, Loader2, Plus, Trash2, ChevronUp, ChevronDown, Scissors,
     AlertCircle, Undo2, Redo2, ChevronsRight, ChevronsLeft,
@@ -118,13 +119,15 @@ function editorReducer(state, action) {
     }
 }
 
-export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, onCreated, inline = false }) {
+export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRerendered, onCreated, inline = false, shell = false }) {
+    const { setPart } = useClipDraft();
     const { timeRef, setTime } = useWorkspace();
     const { refreshMe } = useAuth();
     const [edl, setEdl] = useState(null);
     const [loadError, setLoadError] = useState(null);
     const [state, dispatch] = useReducer(editorReducer, { segments: [], selected: 0, past: [], future: [], pendingBase: null });
     const { segments, selected } = state;
+    useEffect(() => { if (inline) setPart('segments', segments); }, [inline, setPart, segments]);
 
     const [snapToWords, setSnapToWords] = useState(true);
     const [reapplyCaptions, setReapplyCaptions] = useState(true);
@@ -386,6 +389,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         const next = d.base.map((s, i) => (i === d.idx ? seg : s));
         d.last = { seg, next };
         dispatch({ type: 'preview', segments: next });
+        if (inline) setPart('segments', next);
     }, []);
 
     const onDragUp = useCallback(() => {
@@ -1339,7 +1343,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                     height-bound video, and that width is worth more to the source.
                     With the source away it takes everything, which is what gives
                     the clip track its full precision back. */}
-                <div className={`flex flex-col min-h-0 gap-2 xl:order-first ${sourceOpen ? 'xl:w-[26rem] 2xl:w-[30rem] xl:shrink-0' : 'flex-1'}`}>
+                {!shell && <div className={`flex flex-col min-h-0 gap-2 xl:order-first ${sourceOpen ? 'xl:w-[26rem] 2xl:w-[30rem] xl:shrink-0' : 'flex-1'}`}>
                     <div className="flex items-center justify-between gap-2 shrink-0">
                         <p className="eyebrow">Program</p>
                         {dirty && (
@@ -1440,7 +1444,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                     </div>
 
                     {!sourceAvailable && sourceTrack}
-                </div>
+                </div>}
 
                 {/* ---- column 3 · controls ---- */}
                 <div className="w-full xl:w-[21rem] shrink-0 flex flex-col min-h-0">

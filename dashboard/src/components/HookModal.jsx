@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useWorkspace } from '../lib/workspace';
+import { useClipDraft } from '../lib/clipDraft';
 import { Loader2 } from 'lucide-react';
 // The Remotion player is the heaviest part of the bundle: load it when this
 // editor first opens, not with the app.
@@ -68,8 +69,9 @@ function loadHookPrefs() {
     try { return JSON.parse(localStorage.getItem('os_hook_prefs')) || {}; } catch { return {}; }
 }
 
-export default function HookModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, applyPending = false, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
+export default function HookModal({ inline = false, shell = false, onHookOverlay, isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, applyPending = false, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
     const workspace = useWorkspace();
+    const { setPart } = useClipDraft();
     const prefs = loadHookPrefs();
     const [text, setText] = useState(initialText || 'POV: You are using the viral hook feature');
     // Stored as `pos`, not `position`: before 'auto' existed every save wrote
@@ -94,8 +96,6 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
     const [entranceAnimation, setEntranceAnimation] = useState(prefs.entranceAnimation || 'spring');
     const [displayDuration, setDisplayDuration] = useState(5);
 
-    if (!isOpen) return null;
-
     // Build hook config for Remotion preview
     const hookConfig = {
         text: text || 'Enter your text...',
@@ -107,6 +107,20 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
         entranceAnimation,
         displayDurationSec: displayDuration,
     };
+    React.useEffect(() => { if (inline) setPart('hook', hookConfig); }, [inline, setPart, text, position, y, size, style, effectiveFont, entranceAnimation, displayDuration]);
+    React.useEffect(() => {
+        if (!inline || !shell || !isOpen || position !== 'custom' || !onHookOverlay) return undefined;
+        onHookOverlay(<div ref={previewRef} className="absolute inset-0 z-20 pointer-events-none">
+            <div className="absolute inset-x-0 top-0 h-[15%] bg-red-500/20"><span className="text-[9px] text-white/80">YouTube UI</span></div>
+            <div className="absolute inset-x-0 bottom-0 h-[25%] bg-red-500/20"><span className="text-[9px] text-white/80">YouTube UI</span></div>
+            <div className="absolute right-0 top-0 h-[75%] w-[12%] bg-red-500/20" />
+            <div className="absolute left-0 right-[12%] h-[12%] border border-dashed border-white/80 bg-black/10 cursor-grab active:cursor-grabbing touch-none pointer-events-auto" style={{ top: `${y * 100}%` }}
+                onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); dragY(e); }} onPointerMove={(e) => { if (e.buttons) dragY(e); }} title="drag hook; hold alt to enter the YouTube UI zones" />
+        </div>);
+        return () => onHookOverlay(null);
+    }, [inline, shell, isOpen, position, y, onHookOverlay]);
+
+    if (!isOpen) return null;
 
     const useRemotionPreview = !!videoUrl;
 
@@ -131,7 +145,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                 timing, actions, all at full height so nothing scrolls. */}
             <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div ref={previewRef} className={`w-full max-w-[300px] mx-auto md:mx-0 shrink-0 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:w-auto md:max-w-[38%]' : 'md:w-[300px] self-start'}`}>
+                {!shell && <div ref={previewRef} className={`w-full max-w-[300px] mx-auto md:mx-0 shrink-0 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:w-auto md:max-w-[38%]' : 'md:w-[300px] self-start'}`}>
                     {useRemotionPreview ? (
                         <RemotionPreview
                             videoUrl={videoUrl}
@@ -173,7 +187,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                             onPointerMove={(e) => { if (e.buttons) dragY(e); }}
                             title="drag hook; hold alt to enter the YouTube UI zones" />
                     </>}
-                </div>
+                </div>}
 
                 {/* Middle: what the hook says and how it looks */}
                 <div className={`w-full flex flex-col space-y-5 ${inline ? 'md:flex-1 md:min-w-[280px] md:h-full md:min-h-0 md:overflow-y-auto custom-scrollbar md:pr-1' : 'md:w-80'}`}>

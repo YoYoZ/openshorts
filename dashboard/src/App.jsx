@@ -40,6 +40,8 @@ import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
 import { track } from './lib/events';
 import { WorkspaceProvider } from './lib/workspace';
+import { ClipDraftProvider } from './lib/clipDraft';
+import EditorShell from './components/workspace/EditorShell';
 
 // Screens and dialogs that only the hosted edition or rare paths show: loaded
 // when first rendered instead of in the startup bundle.
@@ -398,7 +400,8 @@ function App() {
   // Workspace tab: clip | trim | frame | subs | hook | check. Kept when
   // stepping to another clip, so a pass over one step goes clip by clip.
   const [wsTab, setWsTab] = useState('clip');
-  const openWorkspace = useCallback((index, tab = 'clip') => { setWsTab(tab); setFocusIdx(index); }, []);
+  const [hookOverlay, setHookOverlay] = useState(null);
+  const openWorkspace = useCallback((index, tab = 'trim') => { setWsTab(tab); setFocusIdx(index); }, []);
   // Done / not done for a clip (the workspace's Done button).
   const toggleClipDone = async (index, done) => {
     patchClip(index, { done });
@@ -2628,17 +2631,19 @@ function App() {
         const clip = results.clips[focusIdx];
         const chk = clipChecks[focusIdx];
         const tabs = [
-          ['clip', 'Clip', null, false, false],
           ['trim', 'Trim', '1', !!clip.recipe, false],
           ['frame', 'Framing', '2', !!(clip.recipe?.framing || (clip.crop_overrides && Object.keys(clip.crop_overrides).length)), false],
           ['subs', 'Subtitles', '3', !!(clip.caption_style || clip.caption_words), false],
           ['hook', 'Hook', '4', !!clip.auto_hook?.text, false],
           ['audio', 'Audio', '5', !!clip.audio_fx?.chain?.length, false],
           ['check', 'Check', '6', !!chk && !chk.fail && !chk.warn, !!(chk?.fail || chk?.warn)],
+          // Title, description and publishing: after the edit, not before it.
+          ['clip', 'Clip', null, false, false],
         ];
         const backToClip = () => setWsTab('clip');
         return (
           <WorkspaceProvider key={`${jobId}:${focusIdx}`} jobId={jobId} clipIndex={focusIdx}>
+          <ClipDraftProvider jobId={jobId} clipIndex={focusIdx}>
           <div className="fixed inset-0 z-40 app-bg flex flex-col animate-fade">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 sm:px-4 py-2.5 glass-bar shrink-0">
               <button type="button" onClick={() => setFocusIdx(null)} className="btn-ghost px-3 py-1.5 text-xs" title="back to the clip list (Esc)">
@@ -2671,7 +2676,11 @@ function App() {
                   const i = flow.indexOf(wsTab);
                   const nextId = i < 0 ? flow[0] : flow[i + 1];
                   const nextTab = tabs.find(([id]) => id === nextId);
-                  return nextTab ? (
+                  return i === flow.length - 1 ? (
+                    <button type="button" onClick={() => { void (async () => { await toggleClipDone(focusIdx, true); stepFocus(1); setWsTab('trim'); })(); }} disabled={pos < 0 || pos >= visibleClips.length - 1} className="btn-primary px-3 py-1.5 text-xs disabled:opacity-40" title={pos < 0 || pos >= visibleClips.length - 1 ? 'last clip' : 'mark done and move to the next clip'}>
+                      done · next clip → <ChevronRight size={14} />
+                    </button>
+                  ) : nextTab ? (
                     <button type="button" onClick={() => setWsTab(nextId)} className="btn-primary px-3 py-1.5 text-xs"
                       title={`go to ${nextTab[1]} (${nextTab[2]})`}>
                       {nextTab[1]} <ChevronRight size={14} />
@@ -2694,12 +2703,14 @@ function App() {
               </div>
             </div>
             <div className="flex-1 min-h-0">
+              <EditorShell overlay={wsTab === 'hook' ? hookOverlay : null}>
               {wsTab === 'trim' ? (
                 <div className="h-full p-3 sm:p-6">
                   <div className="card h-full overflow-hidden">
                     <ClipEditor
                       key={`ws-trim-${focusIdx}`}
                       inline
+                      shell
                       jobId={jobId}
                       clipIndex={focusIdx}
                       clipTitle={clip.video_title_for_youtube_short || ''}
@@ -2719,6 +2730,7 @@ function App() {
                   <div className="card h-full overflow-hidden">
                     <AudioEditor
                       key={`ws-audio-${focusIdx}`}
+                      shell
                       jobId={jobId}
                       clipIndex={focusIdx}
                       onApplied={(body) => {
@@ -2733,6 +2745,7 @@ function App() {
                   <ReframeEditor
                     key={`ws-frame-${focusIdx}`}
                     inline
+                    shell
                     jobId={jobId}
                     clipIndex={focusIdx}
                     clipTitle={clip.video_title_for_youtube_short || ''}
@@ -2755,6 +2768,7 @@ function App() {
                       index={focusIdx}
                       jobId={jobId}
                       focus
+                      shell
                       command={focusCmd}
                       onClipPatch={patchClip}
                       checks={chk || null}
@@ -2774,12 +2788,15 @@ function App() {
                       bulkProgress={bulkSub}
                       onBulkHook={handleBulkHooks}
                       bulkHookProgress={bulkHook}
+                      onHookOverlay={setHookOverlay}
                     />
                   </div>
                 </div>
               )}
+              </EditorShell>
             </div>
           </div>
+          </ClipDraftProvider>
           </WorkspaceProvider>
         );
       })()}

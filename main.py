@@ -2435,6 +2435,9 @@ if __name__ == '__main__':
         def _early_work(audio_path, audio_duration):
             try:
                 t = transcribe_video(audio_path)
+                if os.environ.get("RESTORE_PUNCTUATION", "1").strip() != "0":
+                    import punctuation
+                    t, _ = punctuation.restore(t, t.get("language"))
                 early["transcript"] = t
                 if audio_duration and not speech_is_sparse(t, audio_duration):
                     early["clips"] = get_viral_clips(t, audio_duration)
@@ -2602,6 +2605,14 @@ if __name__ == '__main__':
                 save_transcript_checkpoint(output_dir, transcript, input_video, duration)
             except NoAudioError as e:
                 print(f"🔇 {e} — switching to visual analysis.")
+
+        if (transcript is not None
+                and os.environ.get("RESTORE_PUNCTUATION", "1").strip() != "0"):
+            import punctuation
+            transcript, punctuation_report = punctuation.restore(
+                transcript, transcript.get("language"))
+            if punctuation_report.get("words_changed"):
+                print(f"✍️ Restored punctuation in {punctuation_report['words_changed']} words.")
 
         # Music-only or wordless footage transcribes to a handful of words.
         # Clip it by what is on screen instead, like a video with no audio.

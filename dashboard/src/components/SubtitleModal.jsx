@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useClipDraft } from '../lib/clipDraft';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { alignEditedWords } from '../lib/alignWords';
@@ -124,7 +125,8 @@ const luminance = (hex) => {
 };
 
 
-export default function SubtitleModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, applyPending = false, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
+export default function SubtitleModal({ inline = false, shell = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, applyPending = false, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
+    const { setPart } = useClipDraft();
     const workspace = useWorkspace();
     // Opens on the look the clip already has (the Default preset), so
     // "apply" without touching anything changes nothing.
@@ -355,8 +357,6 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
         onGenerate({ ...styleOptions, captionFramesUploaded, captionFrameFingerprint });
     };
 
-    if (!isOpen) return null;
-
     // Build subtitle config for Remotion
     const subtitleConfig = {
         captions,
@@ -387,6 +387,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
             letterSpacing: letterSpacing * 2.8125 * (PREVIEW_PX_PER_UNIT / (1920 / 288)),
         },
     };
+    useEffect(() => { if (inline) setPart('subtitles', subtitleConfig); }, [inline, setPart, captions, position, maxChars, maxDuration, fontName, fontSize, fontColor, highlightColor, borderColor, borderWidth, bgColor, bgOpacity, animation, style, baseOpacity, uppercase, reveal, shadow, bold, italic, letterSpacing]);
+    if (!isOpen) return null;
 
     // Fallback: static CSS preview (same as original)
     const bw = Math.max(borderWidth, 0);
@@ -425,7 +427,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                 stays a collapsible box inside the settings). */}
             <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:flex-none md:w-auto md:max-w-[38%]' : 'max-h-[600px]'}`}>
+                {!shell && <div className={`flex-1 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:flex-none md:w-auto md:max-w-[38%]' : 'max-h-[600px]'}`}>
                     {captionsLoading ? (
                         <div className="flex items-center gap-2 text-muted">
                             <Loader2 size={16} className="animate-spin" />
@@ -455,7 +457,7 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                             </div>
                         </>
                     )}
-                </div>
+                </div>}
 
                 {/* Right: Controls */}
                 <div className={`w-full flex flex-col ${inline ? 'md:w-96 md:shrink-0 md:h-full md:min-h-0' : 'md:w-80'}`}>

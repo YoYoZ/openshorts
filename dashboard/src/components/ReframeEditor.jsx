@@ -3,6 +3,7 @@ import { X, Loader2, Crosshair, RotateCcw, AlertCircle, Play, Pause, Scissors, M
 import { getApiUrl } from '../config';
 import { apiJson } from '../lib/api';
 import { useWorkspace } from '../lib/workspace';
+import { useClipDraft } from '../lib/clipDraft';
 
 // Manual reframing laid out like a non-linear editor.
 //
@@ -109,13 +110,15 @@ function drawOutput(ctx, v, W, H, mode, value, zone, geo) {
     ctx.drawImage(v, (cx - cw / 2) * vw, 0, cw * vw, vh, 0, 0, W, H);
 }
 
-export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, onReframed, inline = false }) {
+export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, onReframed, inline = false, shell = false }) {
     const { timeRef, setTime } = useWorkspace();
+    const { setPart } = useClipDraft();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [data, setData] = useState(null);
     const [overrides, setOverrides] = useState({});   // zone idx -> value (see modeOf)
     const [cuts, setCuts] = useState([]);             // zone edges, clip seconds
+    useEffect(() => { if (inline) { setPart('cuts', cuts); setPart('overrides', overrides); } }, [inline, setPart, cuts, overrides]);
     const [cutsChanged, setCutsChanged] = useState(false);
     const [rendering, setRendering] = useState(false);
     const renderLock = useRef(false);
@@ -456,12 +459,12 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                                     })}
                                 </div>
                             </div>
-                            <div className="shrink-0 flex flex-col items-center gap-2 order-first">
+                            {!shell && <div className="shrink-0 flex flex-col items-center gap-2 order-first">
                                 <canvas ref={canvasRef} width={OUT_W} height={Math.round(OUT_W / outAspect)}
                                     className="rounded-input border border-rule bg-black"
                                     style={{ width: OUT_W, maxHeight: 'calc(100vh - 380px)', objectFit: 'contain' }} />
                                 <span className="text-[10px] text-muted readout">output · live</span>
-                            </div>
+                            </div>}
                         </div>
 
                         {/* transport + zone controls */}
