@@ -5979,7 +5979,7 @@ def _clip_scene_workfile(source_path, segments, output_dir, token):
 
 
 @app.get("/api/clip/{job_id}/{clip_index}/scenes")
-async def get_clip_scenes(job_id: str, clip_index: int, request: Request):
+async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: Optional[str] = None):
     """Scenes of a clip, each with a SOURCE frame to frame it against.
 
     The frames come from the uncropped cut, not the delivered clip: the point
@@ -6016,7 +6016,37 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request):
     # What was applied last time. Without this the editor reopens blank, and
     # since a re-render rebuilds from source using ONLY what it is sent, the
     # next save would silently drop every earlier adjustment.
-    saved_overrides = clip.get('crop_overrides') or {}
+    saved_overrides = dict(clip.get('crop_overrides') or {})
+    saved_cuts = saved_overrides.pop('cuts', None) or []
+    # Zones: the cuts asked for (the editor re-splitting), else the ones saved
+    # with the clip, else the detected scenes.
+    want_cuts = None
+    if cuts is not None:
+        try:
+            want_cuts = sorted({round(float(c), 3) for c in cuts.split(',') if c.strip()})
+        except ValueError:
+            raise HTTPException(status_code=400, detail="cuts must be seconds, comma separated")
+    elif saved_cuts:
+        want_cuts = [float(c) for c in saved_cuts]
+    # Suggested zone edges: where sentences end (clip seconds), for "split by
+    # sentences" in the editor.
+    sentence_cuts = []
+    try:
+        import clip_selection
+        vt = recut.virtual_transcript(data.get('transcript') or {}, segments)
+        words = recut.transcript_words(vt)
+        _starts, ends = clip_selection.sentence_bounds(words)
+        nexts = {round(w['e'], 3): words[i + 1]['s'] for i, w in enumerate(words[:-1])}
+        total_d = recut.total_duration(segments)
+        for e in ends:
+            nxt = nexts.get(round(e, 3))
+            if nxt is None:
+                continue
+            t = round((e + nxt) / 2, 3)
+            if 0.5 < t < total_d - 0.5:
+                sentence_cuts.append(t)
+    except Exception as exc:
+        print(f"Sentence cuts unavailable: {exc}")
     source_path = _locate_source(job_id)
     if not source_path:
         raise HTTPException(
@@ -6040,6 +6070,9 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request):
         try:
             scenes, fps = m.detect_scenes(work_path)
             fps = float(fps) or 30.0
+            if want_cuts:
+                import reframe_v2
+                scenes = reframe_v2.user_zones(work_path, want_cuts, fps)
             orig_w, orig_h = m.get_video_resolution(work_path)
 
             cap = cv2.VideoCapture(work_path)
@@ -6126,6 +6159,10 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request):
     aspect = 1.0 if data.get('output_format') == 'square' else 9.0 / 16.0
     crop_w = min(orig_w, orig_h * aspect)
     return {
+        "saved_cuts": saved_cuts,
+        "zone_cuts": want_cuts or [],
+        "sentence_cuts": sentence_cuts,
+        "zoom_default_width": 0.75,
         "job_id": job_id,
         "clip_index": clip_index,
         "source_width": orig_w,
@@ -6159,8 +6196,31 @@ async def reframe_clip(req: ReframeRequest, request: Request):
 
     overrides = {}
     for key, value in (req.crop_overrides or {}).items():
+        if key == 'cuts':
+            # zone edges cut by hand, seconds into the clip (reframe_v2.user_zones)
+            try:
+                cut_list = sorted({round(float(c), 3) for c in (value or []) if float(c) > 0})
+            except (TypeError, ValueError):
+                continue
+            if cut_list:
+                overrides['cuts'] = cut_list[:200]
+            continue
         try:
             idx = int(key)
+            if isinstance(value, dict) and value.get('mode') in ('fill', 'fit', 'zoom', 'split', 'auto'):
+                mode = value['mode']
+                if mode == 'auto':
+                    continue
+                entry = {'mode': mode}
+                if mode in ('fill', 'zoom') and value.get('x') is not None:
+                    entry['x'] = _fraction(value['x'])
+                if mode == 'zoom' and value.get('width') is not None:
+                    entry['width'] = min(0.95, max(0.3, float(value['width'])))
+                if mode == 'split':
+                    entry['top'] = {'x': _fraction(value['top']['x']), 'y': _fraction(value['top'].get('y', 0.5))}
+                    entry['bottom'] = {'x': _fraction(value['bottom']['x']), 'y': _fraction(value['bottom'].get('y', 0.5))}
+                overrides[idx] = entry
+                continue
             if isinstance(value, dict):
                 def _half(h):
                     if isinstance(h, dict):

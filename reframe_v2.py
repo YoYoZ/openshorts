@@ -175,6 +175,55 @@ def general_filtergraph(out_w, out_h, content_h=None, orig_w=None, orig_h=None):
 
 # --- analysis ---------------------------------------------------------------
 
+ZOOM_DEFAULT_WIDTH = 0.75   # share of the source width a "zoom" zone shows
+
+
+def user_zones(input_video, cuts, fps):
+    """Scenes (FrameTimecode pairs) from cut points in seconds."""
+    import cv2
+    from scenedetect import FrameTimecode
+    cap = cv2.VideoCapture(input_video)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    marks = sorted({int(round(float(c) * fps)) for c in cuts})
+    marks = [f for f in marks if 0 < f < total]
+    edges = [0] + marks + [total]
+    return [(FrameTimecode(a, fps), FrameTimecode(b, fps)) for a, b in zip(edges, edges[1:]) if b > a]
+
+
+def apply_zone_modes(strategies, scene_boundaries, overrides, splits, alternates,
+                     focus_crops, orig_w):
+    """The layout part of the per-zone overrides ({"mode": ...}):
+    fill -> TRACK (tracked, or the fixed centre set later), fit -> GENERAL
+    (whole frame on a blurred bed), zoom -> WIDE cut down to a window of the
+    source width around a centre. Clears any automatic split / alternate on
+    those zones so the choice is what renders."""
+    for raw_idx, value in (overrides or {}).items():
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= idx < len(scene_boundaries)) or not isinstance(value, dict) or 'mode' not in value:
+            continue
+        start_f = scene_boundaries[idx][0]
+        mode = value.get('mode')
+        if mode in ('fill', 'fit', 'zoom'):
+            splits.pop(start_f, None)
+            alternates.pop(start_f, None)
+        if mode == 'fill':
+            strategies[idx] = 'TRACK'
+        elif mode == 'fit':
+            strategies[idx] = 'GENERAL'
+        elif mode == 'zoom':
+            width = min(0.95, max(0.3, float(value.get('width') or ZOOM_DEFAULT_WIDTH)))
+            crop_w = int(orig_w * width)
+            crop_w -= crop_w % 2
+            x = int(round(float(value.get('x', 0.5)) * orig_w - crop_w / 2))
+            x = max(0, min(x, orig_w - crop_w))
+            focus_crops[start_f] = (x - (x % 2), crop_w)
+            strategies[idx] = 'WIDE'
+
+
 def apply_crop_overrides(xs, strategies, scene_boundaries, overrides,
                          crop_w, orig_w, orig_h=None, splits=None):
     """Frame the scenes the user positioned by hand.
@@ -214,6 +263,16 @@ def apply_crop_overrides(xs, strategies, scene_boundaries, overrides,
             continue
         if not 0 <= idx < len(scene_boundaries):
             continue
+        # {"mode": ...} zones: the layout was set by apply_zone_modes; only a
+        # fill with a fixed centre still has a position to apply here, and a
+        # mode-tagged split carries its regions like the plain split form.
+        if isinstance(value, dict) and 'mode' in value:
+            if value['mode'] == 'fill' and value.get('x') is not None:
+                value = float(value['x'])
+            elif value['mode'] == 'split' and 'top' in value and 'bottom' in value:
+                value = {'top': value['top'], 'bottom': value['bottom']}
+            else:
+                continue
         start_f, end_f = scene_boundaries[idx]
         end_f = min(end_f, len(xs))
         if end_f <= start_f:
@@ -396,6 +455,15 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
     scenes, fps = m.detect_scenes(input_video)
     fps = float(fps)  # PySceneDetect can hand back a Fraction
     orig_w, orig_h = m.get_video_resolution(input_video)
+    # Zones the user cut by hand (Framing tab) replace the detected scenes:
+    # detection misses cuts that are not hard shot changes, and the user may
+    # want a different layout per sentence inside one shot. They travel in
+    # crop_overrides["cuts"] (seconds into this cut, between zones) so the
+    # per-zone overrides keep their scene-index keys.
+    user_cuts = (crop_overrides or {}).get("cuts") if isinstance(crop_overrides, dict) else None
+    if user_cuts:
+        scenes = user_zones(input_video, user_cuts, fps)
+        print(f"   ✂️ {len(scenes)} zone(s) cut by hand")
 
     out_w, out_h = delivery_size(orig_w, orig_h, aspect_ratio)
 
@@ -535,6 +603,14 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
     # derives crop_width/crop_height from video_width/video_height and never
     # reads the output pair. So out_w/out_h being the (possibly upscaled)
     # delivery size doesn't move the camera; only the final scale= uses it.
+    # Layouts the user picked per zone (fill / fit / zoom), applied before
+    # the trajectory analysis so "fill" on a shot the classifier had
+    # letterboxed still gets a tracked crop. Positions (a fixed fill centre,
+    # split regions) are applied after it, in apply_crop_overrides.
+    if crop_overrides:
+        apply_zone_modes(strategies, scene_boundaries, crop_overrides, splits,
+                         alternates, focus_crops, orig_w)
+
     cameraman = m.SmoothedCameraman(out_w, out_h, orig_w, orig_h, aspect_ratio=aspect_ratio)
     tracker = m.SpeakerTracker(cooldown_frames=30)
 
