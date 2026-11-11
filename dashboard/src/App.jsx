@@ -557,6 +557,7 @@ function App() {
     };
     const tabKeys = { 1: 'trim', 2: 'frame', 3: 'subs', 4: 'hook', 5: 'audio', 6: 'check' };
     const onKey = (e) => {
+      if (e.defaultPrevented) return;   // an editor already handled this key
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;

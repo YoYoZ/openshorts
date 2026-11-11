@@ -33,6 +33,20 @@ function sentenceBounds(words) {
     return { starts, ends };
 }
 
+function transcriptChunks(words) {
+    const out = [];
+    let start = 0;
+    for (let i = 0; i < words.length; i += 1) {
+        const len = i - start + 1;
+        const sentenceEnd = SENTENCE_END_RE.test(String(words[i].w).trim());
+        if (i === words.length - 1 || (len >= CHUNK_WORDS && sentenceEnd) || len >= CHUNK_MAX_WORDS) {
+            out.push({ offset: start, items: words.slice(start, i + 1) });
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
 // Hiding the source is a working preference, not a per-clip one, so it sticks.
 const HIDE_SOURCE_KEY = 'openshorts_editor_hide_source';
 
@@ -141,7 +155,10 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     const [renderSeconds, setRenderSeconds] = useState(0);
     const [renderError, setRenderError] = useState(null);
     const [confirmClose, setConfirmClose] = useState(false);
-    const [selectedWord, setSelectedWord] = useState(null);
+    const [wordRange, setWordRange] = useState(null);
+    const selectionAnchorRef = useRef(null);
+    const wordDragRef = useRef(false);
+    const wordDragMovedRef = useRef(false);
     const [playhead, setPlayhead] = useState(0);
     const [showSource, setShowSource] = useState(() => {
         try { return localStorage.getItem(HIDE_SOURCE_KEY) !== '1'; } catch { return true; }
@@ -861,6 +878,15 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
             const tag = (e.target?.tagName || '').toLowerCase();
             const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
             if (e.key === 'Escape') {
+                if (wordRange) {
+                    // Handled here: the workspace's own Escape (back to the
+                    // Clip tab) skips events that are already handled.
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    setWordRange(null);
+                    selectionAnchorRef.current = null;
+                    return;
+                }
                 e.preventDefault();
                 // Leaving mid-render abandons nothing: the request keeps
                 // running and onRerendered updates the card when it lands.
@@ -897,8 +923,10 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                 sendToClip('replace');
             }
         };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
+        // Capture phase: runs before the workspace's window listener, so a
+        // key this editor handles (Escape on a selection) is not acted on twice.
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
     });
 
     // ---- re-render ----------------------------------------------------------
@@ -1007,15 +1035,45 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         return best;
     }, [words, sourceTime]);
 
-    const selectedWordIndex = useMemo(() => (
-        selectedWord ? words.findIndex((w) => w.s === selectedWord.s && w.e === selectedWord.e) : -1
-    ), [words, selectedWord]);
-
-    // Stable identity keeps every untouched chunk out of the re-render.
-    const pickWord = useCallback((w) => {
-        setSelectedWord((prev) => (prev && prev.s === w.s && prev.e === w.e ? null : w));
-        seekSource(w.s);
-    }, [seekSource]);
+    const selectedWord = wordRange && wordRange[0] === wordRange[1] ? words[wordRange[0]] : null;
+    const selectedWordIndex = wordRange?.[0] ?? -1;
+    const pickWord = useCallback((index, e) => {
+        if (wordDragMovedRef.current) { wordDragMovedRef.current = false; wordDragRef.current = false; return; }
+        const w = words[index];
+        if (!w) return;
+        const chunks = transcriptChunks(words);
+        let range;
+        if (e.altKey || e.detail >= 3) {
+            const chunk = chunks.find((c) => index >= c.offset && index < c.offset + c.items.length);
+            range = [chunk.offset, chunk.offset + chunk.items.length - 1];
+            selectionAnchorRef.current = range[0];
+        } else if (e.detail === 2) {
+            const { starts, ends } = sentenceBounds(words);
+            let lo = 0, hi = words.length - 1;
+            for (let i = 0; i < words.length; i += 1) {
+                if (starts.some((t) => t === words[i].s) && i <= index) lo = i;
+                if (ends.some((t) => t === words[i].e) && i >= index) { hi = i; break; }
+            }
+            range = [lo, hi];
+            selectionAnchorRef.current = lo;
+        } else if (e.shiftKey && selectionAnchorRef.current !== null) {
+            range = [Math.min(selectionAnchorRef.current, index), Math.max(selectionAnchorRef.current, index)];
+        } else {
+            const same = wordRange?.[0] === index && wordRange?.[1] === index;
+            range = same ? null : [index, index];
+            selectionAnchorRef.current = index;
+        }
+        setWordRange(range);
+        if (range) seekSource(words[range[0]].s);
+    }, [words, wordRange, seekSource]);
+    const extendWordRange = useCallback((index) => {
+        if (!wordDragRef.current || selectionAnchorRef.current === null) return;
+        wordDragMovedRef.current = true;
+        setWordRange([Math.min(selectionAnchorRef.current, index), Math.max(selectionAnchorRef.current, index)]);
+    }, []);
+    const selectRange = wordRange && wordRange[0] !== wordRange[1]
+        ? { start: words[wordRange[0]]?.s, end: words[wordRange[1]]?.e }
+        : null;
 
     // ---- render -------------------------------------------------------------
     if (loadError) {
@@ -1299,7 +1357,18 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                 {/* Boundary actions live HERE, above the words they
                                     act on, because this is where the eye is when
                                     picking a cut point from the text (issue #73). */}
-                                {selectedWord ? (
+                                {selectRange ? (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        <button onClick={() => setSegment(selected, selectRange, { snap: false })} className="btn-quiet text-[11px] py-1 px-2">
+                                            set segment #{selected + 1} to selection
+                                        </button>
+                                        <button
+                                            onClick={() => dispatch({ type: 'commit', segments: [...segments, clampSeg(selectRange)], select: segments.length })}
+                                            disabled={segments.length >= limits.max_segments}
+                                            className="btn-quiet text-[11px] py-1 px-2 disabled:opacity-40"
+                                        >add as new segment</button>
+                                    </div>
+                                ) : selectedWord ? (
                                     <div className="flex items-center gap-1.5 shrink-0">
                                         <button
                                             onClick={() => setSegment(selected, { start: selectedWord.s }, { snap: false })}
@@ -1329,8 +1398,12 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                     activeWordIndex={activeWordIndex}
                                     anchorIndex={anchorIndex}
                                     selectedWordIndex={selectedWordIndex}
+                                    selectedWordEndIndex={wordRange?.[1] ?? -1}
                                     selected={selected}
                                     onPick={pickWord}
+                                    onDragStart={(index) => { selectionAnchorRef.current = index; wordDragMovedRef.current = false; wordDragRef.current = true; setWordRange([index, index]); seekSource(words[index].s); }}
+                                    onDragEnd={() => { wordDragRef.current = false; }}
+                                    onExtend={extendWordRange}
                                 />
                             )}
                         </div>
@@ -1653,7 +1726,8 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
 // handful of 50-word chunks) + at most 3 anchor chunks + 1 active chunk,
 // independent of transcript length.
 function TranscriptPane({
-    words, highlightSeg, activeWordIndex, anchorIndex, selectedWordIndex, selected, onPick,
+    words, highlightSeg, activeWordIndex, anchorIndex, selectedWordIndex, selectedWordEndIndex, selected, onPick,
+    onDragStart, onDragEnd, onExtend,
 }) {
     const boxRef = useRef(null);
     const elsRef = useRef(new Map());     // chunk index -> wrapper element
@@ -1663,19 +1737,7 @@ function TranscriptPane({
     // Each chunk is a block, so its end is a visible line break: end chunks
     // on a sentence end (from CHUNK_WORDS words on, at most CHUNK_MAX_WORDS)
     // so the breaks read as paragraphs instead of cutting sentences in half.
-    const chunks = useMemo(() => {
-        const out = [];
-        let start = 0;
-        for (let i = 0; i < words.length; i += 1) {
-            const len = i - start + 1;
-            const sentenceEnd = SENTENCE_END_RE.test(String(words[i].w).trim());
-            if (i === words.length - 1 || (len >= CHUNK_WORDS && sentenceEnd) || len >= CHUNK_MAX_WORDS) {
-                out.push({ offset: start, items: words.slice(start, i + 1) });
-                start = i + 1;
-            }
-        }
-        return out;
-    }, [words]);
+    const chunks = useMemo(() => transcriptChunks(words), [words]);
     // Word index -> chunk index (chunks vary in length now).
     const chunkOf = useCallback((index) => {
         if (index < 0 || !chunks.length) return -1;
@@ -1826,8 +1888,12 @@ function TranscriptPane({
                             lit={lit}
                             active={local(activeWordIndex)}
                             anchorAt={local(anchorIndex)}
-                            selectedAt={local(selectedWordIndex)}
+                            selectedAt={selectedWordIndex}
+                            selectedEndAt={selectedWordEndIndex}
                             onPick={onPick}
+                            onDragStart={onDragStart}
+                            onDragEnd={onDragEnd}
+                            onExtend={onExtend}
                         />
                     );
                 }
@@ -1856,7 +1922,7 @@ function TranscriptPane({
 // It returns a Fragment: the words are direct children of the chunk wrapper
 // that TranscriptPane renders, whose flex-wrap provides the layout.
 const TranscriptChunk = React.memo(function TranscriptChunk({
-    items, offset, lit, active, anchorAt, selectedAt, onPick,
+    items, offset, lit, active, anchorAt, selectedAt, selectedEndAt, onPick, onDragStart, onDragEnd, onExtend,
 }) {
     return (
         <>
@@ -1864,13 +1930,17 @@ const TranscriptChunk = React.memo(function TranscriptChunk({
                 const inside = lit === 'all'
                     || (lit !== 'none' && w.e > lit.start && w.s < lit.end);
                 const isActive = i === active;
-                const isSel = i === selectedAt;
+                const globalIndex = offset + i;
+                const isSel = selectedAt >= 0 && globalIndex >= selectedAt && globalIndex <= selectedEndAt;
                 return (
                     <button
                         key={`${w.s}-${offset + i}`}
                         data-anchor={i === anchorAt ? '1' : undefined}
                         data-active={isActive ? '1' : undefined}
-                        onClick={() => onPick(w)}
+                        onPointerDown={(e) => { if (e.button === 0) onDragStart(globalIndex); }}
+                        onPointerEnter={() => onExtend(globalIndex)}
+                        onPointerUp={onDragEnd}
+                        onClick={(e) => { onDragEnd(); onPick(globalIndex, e); }}
                         title={`${fmt(w.s)} – ${fmt(w.e)}`}
                         className={`px-1 py-0.5 rounded text-xs transition-colors ${
                             isSel ? 'bg-brass text-brassink'
