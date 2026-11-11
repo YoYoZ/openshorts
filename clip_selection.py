@@ -322,32 +322,46 @@ def sentence_bounds(words):
 
 
 def snap_clip_to_sentences(start, end, words, video_duration,
-                           min_duration=15.0, max_duration=60.0, window=6.0):
-    """Move a clip's start back to where its sentence begins and its end on to
-    where its sentence ends (within ``window`` s), so a cut never opens or
-    closes on half a sentence. Extending is preferred over cutting in; when
-    the longer clip would break max_duration the nearer boundary inside is
-    used. Then snap_clip_to_words adds the silence padding."""
+                           min_duration=15.0, max_duration=60.0, window=15.0):
+    """Put a clip on whole sentences: its start on the beginning of the
+    sentence it falls in, its end on the end of the sentence it falls in, so a
+    cut never opens on the tail of the previous sentence or drops the last
+    sentence of a thought. Then snap_clip_to_words adds the silence padding.
+
+    Preference, first that fits min/max_duration:
+      1. extend both ways to the containing sentences;
+      2. keep the containing start, end at the previous sentence end;
+      3. start at the next sentence, end at the containing sentence end;
+      4. next sentence start + previous sentence end.
+    Only when none of those fits (or no sentence is within ``window`` s) do
+    the original times stay, rather than a mid-sentence compromise."""
     if not words:
         return snap_clip_to_words(start, end, words, video_duration, min_duration, max_duration)
     starts, ends = sentence_bounds(words)
     start, end = float(start), float(end)
-    back = [t for t in starts if start - window <= t <= start + 0.3]
-    fwd = [t for t in starts if start < t <= start + window]
-    new_start = max(back) if back else (min(fwd) if fwd else start)
-    after = [t for t in ends if end - 0.3 <= t <= end + window]
-    before = [t for t in ends if end - window <= t < end]
-    new_end = min(after) if after else (max(before) if before else end)
-    if new_end - new_start > max_duration:
-        # Too long: give up the extension on the side that grew most.
-        alt_end = max(before) if before else end
-        alt_start = min(fwd) if fwd else start
-        if alt_end - new_start <= max_duration and alt_end > new_start:
-            new_end = alt_end
-        elif new_end - alt_start <= max_duration:
-            new_start = alt_start
-        else:
-            new_start, new_end = start, end
+
+    def pick(values, fn):
+        return fn(values) if values else None
+
+    containing_start = pick([t for t in starts if start - window <= t <= start + 0.3], max)
+    next_start = pick([t for t in starts if start + 0.3 < t <= start + window], min)
+    containing_end = pick([t for t in ends if end - 0.3 <= t <= end + window], min)
+    previous_end = pick([t for t in ends if end - window <= t < end - 0.3], max)
+
+    new_start, new_end = start, end
+    for s_, e_ in ((containing_start, containing_end), (containing_start, previous_end),
+                   (next_start, containing_end), (next_start, previous_end)):
+        if s_ is None or e_ is None:
+            continue
+        if e_ > s_ and min_duration <= e_ - s_ <= max_duration:
+            new_start, new_end = s_, e_
+            break
+    else:
+        # Nothing fits both bounds: still fix whichever edge can be fixed alone.
+        if containing_start is not None and end - containing_start <= max_duration:
+            new_start = containing_start
+        if containing_end is not None and containing_end - new_start <= max_duration:
+            new_end = containing_end
     return snap_clip_to_words(new_start, new_end, words, video_duration,
                               min_duration=min_duration, max_duration=max_duration,
                               search_window=0.3)
