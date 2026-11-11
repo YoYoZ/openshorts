@@ -896,6 +896,34 @@ function App() {
       }
     }
     setBulkSub({ running: false, current: total, total, errors });
+    // The look also becomes the caption default for new projects (Settings ->
+    // subtitles), as "apply to all" does for hooks. It used to stay in this
+    // project only, so the next video came out in the old Settings style.
+    try {
+      await apiFetch('/api/settings/subtitle_defaults', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          style: options.style || 'karaoke',
+          position: options.position,
+          font_name: options.fontName,
+          font_size: options.fontSize,
+          font_color: options.fontColor,
+          highlight_color: options.highlightColor || '#FFD700',
+          border_color: options.borderColor,
+          border_width: options.borderWidth,
+          effect: options.effect || 'none',
+          base_opacity: options.baseOpacity ?? 1.0,
+          uppercase: !!options.uppercase,
+          max_chars: options.maxChars ?? 16,
+          max_duration: options.maxDuration ?? 1.4,
+          bold: options.bold ?? true,
+          italic: !!options.italic,
+          letter_spacing: options.letterSpacing || 0,
+          shadow: options.shadow || 0,
+        }),
+      });
+    } catch { /* the clips are done; the default is a convenience */ }
     refreshMe();
     // Refresh results so each ResultCard picks up its new subtitled video_url.
     try {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link2, Upload, FileVideo, X, Info, Loader2, ChevronDown } from 'lucide-react';
 import { track } from '../lib/events';
 import { getApiUrl } from '../config';
+import { apiFetch } from '../lib/api';
 
 const SUPPORTED_PLATFORMS = [
     'YouTube', 'Vimeo', 'TikTok', 'X / Twitter', 'Twitch',
@@ -56,6 +57,18 @@ export default function MediaInput({ onProcess, isProcessing }) {
         // v2 key: the default became 'pill'; an old saved 'classic' was just the old default.
         try { return localStorage.getItem('os_auto_hook_style_v2') || 'pill'; } catch { return 'pill'; }
     });
+    // The saved hook default (Settings -> hook, or "apply this style to all
+    // clips") wins over the style this browser last used: the form sends its
+    // pick with the job, and a stale browser value overrode the setting.
+    const hookStyleTouched = useRef(false);
+    useEffect(() => {
+        let live = true;
+        apiFetch('/api/settings').then((r) => (r.ok ? r.json() : null)).then((s) => {
+            const saved = s?.hook_defaults?.style;
+            if (live && saved && !hookStyleTouched.current) setAutoHookStyle(saved);
+        }).catch(() => {});
+        return () => { live = false; };
+    }, []);
     // Layout: 'auto' lets the AI pick per video (server default); the others
     // force one on so a podcast host who knows what they uploaded doesn't
     // depend on the detector, and 'none' keeps the plain single crop.
@@ -369,7 +382,7 @@ export default function MediaInput({ onProcess, isProcessing }) {
                                 {autoHook && (
                                     <select
                                         value={autoHookStyle}
-                                        onChange={(e) => setAutoHookStyle(e.target.value)}
+                                        onChange={(e) => { hookStyleTouched.current = true; setAutoHookStyle(e.target.value); }}
                                         className="input-field !w-auto text-xs py-1.5"
                                     >
                                         <option value="pill">Pills</option>

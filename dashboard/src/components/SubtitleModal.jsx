@@ -648,6 +648,9 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                                 : `apply this style to all ${bulkCount} clips`}
                                         </button>
                                     )}
+                                    {onApplyAll && bulkCount > 1 && (
+                                        <p className="readout normal-case">Also the default for new projects.</p>
+                                    )}
                                     {/* Clips ship captioned by default, so the way
                                         out has to be here — otherwise a user who
                                         doesn't want captions is stuck with them. */}
