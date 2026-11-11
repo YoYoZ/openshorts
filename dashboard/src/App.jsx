@@ -4,6 +4,7 @@ import KeyInput from './components/KeyInput';
 import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
+import { RenderProgressBar } from './components/RenderOverlay';
 import ClipRow from './components/ClipRow';
 import AudioEditor from './components/AudioEditor';
 import { clipCopyBlock } from './lib/clipCopy';
@@ -385,6 +386,7 @@ function App() {
   const [clipSort, setClipSort] = useState('score');
   const [selectedIdx, setSelectedIdx] = useState(() => new Set());
   const [focusIdx, setFocusIdx] = useState(null);       // original clip index in the workspace
+  const warmedScenes = useRef(new Set());
   const [focusCmd, setFocusCmd] = useState(null);       // { name, n } keyboard command
   // Workspace tab: clip | trim | frame | subs | hook | check. Kept when
   // stepping to another clip, so a pass over one step goes clip by clip.
@@ -407,6 +409,13 @@ function App() {
   // Pre-publish checklist summaries per clip index ({ok, warn, fail, info}).
   const [clipChecks, setClipChecks] = useState({});
   useEffect(() => { setSelectedIdx(new Set()); setFocusIdx(null); setClipFilter('all'); setClipChecks({}); }, [jobId]);
+  useEffect(() => {
+    if (focusIdx === null || !jobId) return;
+    const key = `${jobId}:${focusIdx}`;
+    if (warmedScenes.current.has(key)) return;
+    warmedScenes.current.add(key);
+    apiJson(`/api/clip/${jobId}/${focusIdx}/scenes`).catch(() => {});
+  }, [focusIdx, jobId]);
   // Renders made in one card (workspace or grid) land in the job metadata;
   // re-reading it on every workspace switch keeps the other copy current.
   useEffect(() => {
@@ -2628,7 +2637,8 @@ function App() {
               <span className="readout text-xs text-muted hidden sm:inline">
                 clip #{focusIdx + 1}{pos >= 0 ? ` · ${pos + 1} of ${visibleClips.length}` : ''} · {clipStatus(clip).replace('todo', 'to edit')}
               </span>
-              <nav role="tablist" aria-label="Clip editing" className="flex items-center gap-1 overflow-x-auto order-last sm:order-none w-full sm:w-auto sm:mx-auto">
+              <nav role="tablist" aria-label="Clip editing" className="relative flex items-center gap-1 overflow-x-auto order-last sm:order-none w-full sm:w-auto sm:mx-auto">
+                <RenderProgressBar jobId={jobId} clipIndex={focusIdx} />
                 {tabs.map(([id, label, key, isDone, warn]) => {
                   const on = wsTab === id;
                   return (

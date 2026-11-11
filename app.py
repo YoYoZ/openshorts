@@ -33,8 +33,27 @@ import recut
 import layout_ranges
 import watermarked
 import media_auth
+import render_ops
 
 load_dotenv()
+
+
+def _tracked(kind):
+    """Expose slow clip work through the shared render progress poll."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            req = kwargs.get('req')
+            job_id = getattr(req, 'job_id', None) or kwargs.get('job_id')
+            clip_index = getattr(req, 'clip_index', None)
+            if clip_index is None:
+                clip_index = kwargs.get('clip_index')
+            if job_id is None or clip_index is None:
+                return await fn(*args, **kwargs)
+            with render_ops.op(job_id, clip_index, kind):
+                return await fn(*args, **kwargs)
+        return wrapper
+    return deco
 
 # Constants
 # Where projects live. The desktop app sets these from its folder settings;
@@ -4427,6 +4446,7 @@ async def clip_audio_preview(job_id: str, clip_index: int, req: AudioChainReques
 
 
 @app.post("/api/clip/{job_id}/{clip_index}/audio/apply")
+@_tracked("applying audio")
 async def clip_audio_apply(job_id: str, clip_index: int, req: AudioChainRequest, request: Request):
     """Save the chain on the clip and put it on the served file (an empty
     chain takes the audio layer off)."""
@@ -4692,24 +4712,6 @@ async def cancel_job(job_id: str):
     except Exception:
         pass
     return {"cancelled": True, "killed_processes": killed}
-
-
-import functools
-import render_ops
-
-
-def _tracked(kind):
-    """Report this endpoint's re-render of req.clip_index to /api/clip-ops."""
-    def deco(fn):
-        @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            req = kwargs.get('req')
-            if req is None or getattr(req, 'job_id', None) is None:
-                return await fn(*args, **kwargs)
-            with render_ops.op(req.job_id, req.clip_index, kind):
-                return await fn(*args, **kwargs)
-        return wrapper
-    return deco
 
 
 @app.get("/api/clip-ops/{job_id}")
@@ -5217,7 +5219,6 @@ async def _ensure_job_files(job_id: str, request: Request) -> bool:
         return False
 
 
-from editor import VideoEditor
 from subtitles import generate_srt, generate_ass, burn_subtitles, subtitles_filter, generate_srt_from_video, CAPTION_PRESETS, frame_aspect_of
 from hooks import add_hook_to_video
 from translate import translate_video, get_supported_languages
@@ -5293,6 +5294,7 @@ async def edit_clip(
         # Run editing in a thread to avoid blocking main loop
         # Since VideoEditor uses blocking calls (subprocess, API wait)
         def run_edit():
+            from editor import VideoEditor
             editor = VideoEditor(api_key=final_api_key)
             
             # SAFE FILE RENAMING STRATEGY (Avoid UnicodeEncodeError in Docker)
@@ -6506,6 +6508,7 @@ async def generate_effects_config(
             raise HTTPException(status_code=404, detail=f"Video file not found: {input_path}")
 
         def run_effects_generation():
+            from editor import VideoEditor
             editor = VideoEditor(api_key=final_api_key)
 
             # Create safe ASCII filename to avoid encoding issues

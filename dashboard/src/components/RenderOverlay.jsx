@@ -74,3 +74,18 @@ export default function RenderOverlay({ jobId, clipIndex, fallbackLabel, onBusyC
         </div>
     );
 }
+
+export function RenderProgressBar({ jobId, clipIndex }) {
+    const [op, setOp] = useState(null);
+    useEffect(() => {
+        if (!jobId) return undefined;
+        return subscribe(jobId, { clipIndex, fast: true, cb: setOp });
+    }, [jobId, clipIndex]);
+    if (!op) return null;
+    return (
+        <div className="absolute inset-x-0 bottom-0 h-0.5 bg-paper3" aria-label={`${op.kind} progress`}>
+            <div className="h-full bg-brass transition-[width] duration-500"
+                style={{ width: `${op.pct != null ? Math.max(3, op.pct) : 3}%` }} />
+        </div>
+    );
+}
