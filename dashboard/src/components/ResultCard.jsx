@@ -84,7 +84,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     // echo (onClipPatch) must not overwrite what was typed after it left.
     const editingRef = useRef(false);
     const savedMeta = useRef({ title: clip.video_title_for_youtube_short || '', desc: clip.video_description_for_tiktok || '' });
-    editingRef.current = editingMeta;
+    // The workspace's Clip tab edits title and description in place (the
+    // YOUTUBE / DESCRIPTION fields): while one has focus it is "editing" too.
+    const [inlineEdit, setInlineEdit] = useState(false);
+    editingRef.current = editingMeta || inlineEdit;
     useEffect(() => {
         if (editingRef.current) return;
         const t = clip.video_title_for_youtube_short || '';
@@ -143,11 +146,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
     // Autosave: a pause in typing saves the title and description.
     useEffect(() => {
-        if (!editingMeta || !metaDirty || metaBusy) return undefined;
+        if ((!editingMeta && !inlineEdit) || !metaDirty || metaBusy) return undefined;
         const t = setTimeout(() => saveMeta({ close: false }), 900);
         return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editingMeta, title, desc, metaBusy]);
+    }, [editingMeta, inlineEdit, title, desc, metaBusy]);
 
     // Preview helpers: Shorts safe-zone overlay, and before/after against the
     // version this card showed before its last render (this session).
@@ -1095,11 +1098,19 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 <div className="flex-1 min-h-0 space-y-2 mb-4">
                     <div className="bg-black/25 rounded-input px-3 py-2 border border-rule flex items-center gap-2 min-w-0 overflow-hidden">
                         <span className="eyebrow shrink-0">YOUTUBE</span>
-                        <p className="text-xs text-ink2 truncate flex-1 min-w-0">
-                            {clip.video_title_for_youtube_short || "Viral Short Video"}
-                        </p>
+                        {focus ? (
+                            <input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)}
+                                onFocus={() => setInlineEdit(true)}
+                                onBlur={() => { setInlineEdit(false); if (metaDirty) saveMeta({ close: false }); }}
+                                aria-label="title" placeholder="title"
+                                className="flex-1 min-w-0 bg-transparent outline-none text-sm text-ink2 focus:text-ink" />
+                        ) : (
+                            <p className="text-xs text-ink2 truncate flex-1 min-w-0">
+                                {clip.video_title_for_youtube_short || "Viral Short Video"}
+                            </p>
+                        )}
                         <button
-                            onClick={() => handleCopy('youtube', clip.video_title_for_youtube_short || "Viral Short Video")}
+                            onClick={() => handleCopy('youtube', (focus ? title : clip.video_title_for_youtube_short) || "Viral Short Video")}
                             aria-label="copy youtube title"
                             className="p-1 rounded-full text-muted hover:text-brass transition-colors shrink-0"
                         >
@@ -1111,11 +1122,20 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         description in full instead of one clipped line. */}
                     <div className={`bg-black/25 rounded-input px-3 py-2 border border-rule flex gap-2 min-w-0 overflow-hidden ${focus ? 'items-start' : 'items-center'}`}>
                         <span className={`eyebrow shrink-0 ${focus ? 'mt-0.5' : ''}`}>{focus ? 'DESCRIPTION' : 'TIKTOK · IG'}</span>
-                        <p className={`text-ink2 flex-1 min-w-0 ${focus ? 'text-sm leading-relaxed whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto' : 'text-xs truncate'}`}>
-                            {clip.video_description_for_tiktok || clip.video_description_for_instagram}
-                        </p>
+                        {focus ? (
+                            <textarea value={desc} onChange={(e) => setDesc(e.target.value)}
+                                onFocus={() => setInlineEdit(true)}
+                                onBlur={() => { setInlineEdit(false); if (metaDirty) saveMeta({ close: false }); }}
+                                aria-label="description" placeholder="description (with hashtags)"
+                                rows={Math.min(14, Math.max(4, Math.ceil((desc || '').length / 60) + (desc || '').split('\n').length))}
+                                className="flex-1 min-w-0 bg-transparent outline-none resize-none text-sm leading-relaxed text-ink2 focus:text-ink custom-scrollbar max-h-[40vh]" />
+                        ) : (
+                            <p className="text-ink2 flex-1 min-w-0 text-xs truncate">
+                                {clip.video_description_for_tiktok || clip.video_description_for_instagram}
+                            </p>
+                        )}
                         <button
-                            onClick={() => handleCopy('caption', clip.video_description_for_tiktok || clip.video_description_for_instagram)}
+                            onClick={() => handleCopy('caption', (focus ? desc : (clip.video_description_for_tiktok || clip.video_description_for_instagram)))}
                             aria-label="copy caption"
                             className="p-1 rounded-full text-muted hover:text-brass transition-colors shrink-0"
                         >
@@ -1123,6 +1143,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                         </button>
                     </div>
 
+                    {focus && (
+                        <p className="readout normal-case text-[11px] -mt-1">
+                            {metaBusy === 'save' ? 'saving…' : metaDirty ? 'unsaved' : 'click to edit · saves automatically'}
+                        </p>
+                    )}
                     <button
                         onClick={() => setShowDescModal(true)}
                         className="w-full flex items-center justify-center gap-2 py-2 rounded-input border border-dashed border-rule text-xs lowercase text-muted hover:text-brass hover:border-rule2 transition-colors"
