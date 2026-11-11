@@ -646,12 +646,15 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
         # version turned the outline itself into a 4-unit blurred band in the
         # highlight colour, which at 1080x1920 reads as a solid slab behind
         # the word. The halo is a second, lower layer (see the events below):
-        # the same line with every glyph transparent except the active word's
-        # outline, wide, faint and blurred.
+        # the same line with every glyph transparent except the active word,
+        # drawn in the highlight colour a little wider than the black outline
+        # (so the glow starts where the outline ends), translucent and
+        # blurred. Calibrated by eye against the preview's CSS on a real
+        # frame (11-nov-2026): a wider or stronger halo blooms over the word.
         active_prefix = f"{{\\c{highlight_inline}}}"
-        halo = max(2.0, outline_width * 0.75 + 1.5)
-        halo_prefix = (f"{{\\1a&HFF&\\3a&H50&\\3c{highlight_inline}"
-                       f"\\bord{halo:g}\\blur{halo + 1:g}}}")
+        halo = outline_width + 1.5
+        halo_prefix = (f"{{\\1c{highlight_inline}\\3c{highlight_inline}\\1a&H60&\\3a&H60&"
+                       f"\\bord{halo:g}\\blur2.5}}")
     elif effect == "box":
         box_bord = max(4, int(outline_width) + 3)
         active_prefix = (f"{{\\c&HFFFFFF&\\3c{highlight_inline}"
