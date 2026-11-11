@@ -122,7 +122,7 @@ const luminance = (hex) => {
 };
 
 
-export default function SubtitleModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
+export default function SubtitleModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, applyPending = false, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
     // Opens on the look the clip already has (the Default preset), so
     // "apply" without touching anything changes nothing.
     const [position, setPosition] = useState('bottom');
@@ -643,7 +643,8 @@ export default function SubtitleModal({ inline = false, isOpen, onClose, onGener
                                         </button>
                                         <button
                                             onClick={() => { clearDraft(); onGenerate(styleOptions); }}
-                                            disabled={isProcessing}
+                                            disabled={isProcessing || applyPending}
+                                            title={applyPending ? 'a subtitle render is already running for this clip' : undefined}
                                             className="btn-primary flex-1"
                                         >
                                             {(isProcessing && !bulkRunning) && <Loader2 size={16} className="animate-spin text-brassink" />}

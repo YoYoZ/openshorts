@@ -276,14 +276,24 @@ async function createWindow() {
   });
 
   try {
-    await runtime.ensurePython((text) => {
+    // The UI server is already up (app.whenReady): show the real UI at once;
+    // it waits for the engine itself ("starting engine…").
+    win.loadURL(appUrl());
+    // First launch only: the Python setup takes minutes, so it gets the
+    // splash with its progress lines, and the UI comes back when it is done.
+    let setupShown = false;
+    await runtime.ensurePython(async (text) => {
+      if (!setupShown) {
+        setupShown = true;
+        await win.loadURL(SPLASH).catch(() => {});
+      }
       const safe = JSON.stringify(String(text).slice(0, 160));
       win.webContents.executeJavaScript(
         "document.body.style.whiteSpace = 'pre-line'; document.body.style.textAlign = 'center';"
         + `document.body.innerText = 'setting up AutoShortsCut (first launch)\\n\\n' + ${safe}`).catch(() => {});
     });
     await startBackend();
-    win.loadURL(appUrl());
+    if (setupShown) win.loadURL(appUrl());
   } catch (err) {
     dialog.showErrorBox('Could not start', `${err.message}\nLogs: ${runtime.SETUP_LOG} and ${path.join(LOG_DIR, 'backend.log')}`);
     app.quit();

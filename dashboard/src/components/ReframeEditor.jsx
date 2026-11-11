@@ -115,7 +115,10 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
     const [overrides, setOverrides] = useState({});   // zone idx -> value (see modeOf)
     const [cuts, setCuts] = useState([]);             // zone edges, clip seconds
     const [cutsChanged, setCutsChanged] = useState(false);
-    const [saving, setSaving] = useState(false);
+    const [rendering, setRendering] = useState(false);
+    const renderLock = useRef(false);
+    const alive = useRef(true);
+    useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
     const [t, setT] = useState(0);
     const [playing, setPlaying] = useState(false);
     const [selCut, setSelCut] = useState(null);      // index of the cut picked on the timeline (merge removes it)
@@ -330,13 +333,15 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 
     // ---- save -----------------------------------------------------------
     const adjusted = Object.keys(overrides).length;
-    const canSave = (adjusted > 0 || cutsChanged) && !saving && !loading;
+    const canSave = (adjusted > 0 || cutsChanged) && !loading;
 
-    const handleSave = async () => {
-        if (!canSave) return;
-        setSaving(true);
+    const handleSave = () => {
+        if (!canSave || renderLock.current) return;
+        renderLock.current = true;
+        setRendering(true);
         setError(null);
-        try {
+        const run = async () => {
+          try {
             const r4 = (n) => Number(Number(n).toFixed(4));
             const halfOut = (h) => ({ x: r4(h.x), y: r4(h.y), ...(h.w ? { w: r4(h.w) } : {}) });
             const payload = Object.fromEntries(Object.entries(overrides).map(([k, v]) => {
@@ -354,13 +359,16 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                 body: JSON.stringify({ job_id: jobId, clip_index: clipIndex, crop_overrides: payload }),
             });
             if (onReframed) onReframed(clipIndex, res);
-            if (inline) setCutsChanged(false);   // the workspace tab stays open
-            else onClose();
+            if (alive.current && inline) setCutsChanged(false);   // the workspace tab stays open
+            else if (alive.current) onClose();
         } catch (e) {
-            setError(e?.message || 'The re-render failed.');
+            if (alive.current) setError(e?.message || 'The re-render failed.');
         } finally {
-            setSaving(false);
-        }
+            renderLock.current = false;
+            if (alive.current) setRendering(false);
+          }
+        };
+        void run();
     };
 
     // ---- render ---------------------------------------------------------
@@ -508,9 +516,10 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                     </span>
                     <div className="flex items-center gap-2">
                         <button onClick={onClose} className="btn-quiet py-2 px-4 text-sm">cancel</button>
-                        <button onClick={handleSave} disabled={!canSave} className="btn-primary py-2 px-4 text-sm disabled:opacity-40">
-                            {saving ? <Loader2 size={16} className="animate-spin" /> : null}
-                            {saving ? 're-rendering…' : 'apply framing'}
+                        {rendering && <span className="text-xs text-muted">rendering in background</span>}
+                        <button onClick={handleSave} disabled={!canSave || rendering} title={rendering ? 'a re-render is already running for this clip' : undefined} className="btn-primary py-2 px-4 text-sm disabled:opacity-40">
+                            {rendering ? <Loader2 size={16} className="animate-spin" /> : null}
+                            apply framing
                         </button>
                     </div>
                 </div>

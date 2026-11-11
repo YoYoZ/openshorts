@@ -137,6 +137,10 @@ function BuiltinParams({ step, spec, onParams }) {
 }
 
 export default function AudioEditor({ jobId, clipIndex, onApplied }) {
+    const alive = useRef(true);
+    const applyLock = useRef(false);
+    const [rendering, setRendering] = useState(false);
+    useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
     const [effects, setEffects] = useState(null);
     const [info, setInfo] = useState(null);         // {analysis, chain, source_url}
     const [chain, setChain] = useState([]);
@@ -225,7 +229,13 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
     };
 
     const run = async (kind) => {
+        if (kind === 'apply' && applyLock.current) return;
+        if (kind === 'apply') {
+            applyLock.current = true;
+            setRendering(true);
+        }
         setBusy(kind);
+        if (kind === 'apply') setBusy(null);
         setError(null);
         try {
             const res = await apiFetch(`/api/clip/${jobId}/${clipIndex}/audio/${kind}`, {
@@ -234,16 +244,16 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
             const body = await res.json();
             if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
             if (kind === 'preview') {
-                setPreview({ ...body, chainKey: JSON.stringify(chain) });
-                setListen('processed');
+                if (alive.current) { setPreview({ ...body, chainKey: JSON.stringify(chain) }); setListen('processed'); }
             } else {
-                setInfo((i) => ({ ...i, chain: body.audio_fx?.chain || [] }));
+                if (alive.current) setInfo((i) => ({ ...i, chain: body.audio_fx?.chain || [] }));
                 onApplied?.(body);
             }
         } catch (e) {
-            setError(e.message);
+            if (alive.current) setError(e.message);
         } finally {
-            setBusy(null);
+            if (kind === 'apply') { applyLock.current = false; if (alive.current) setRendering(false); }
+            if (alive.current) setBusy(null);
         }
     };
 
@@ -350,11 +360,12 @@ export default function AudioEditor({ jobId, clipIndex, onApplied }) {
                         <button type="button" onClick={() => run('preview')} disabled={!!busy || !chain.length} className="btn-ghost flex-1 py-2 text-sm">
                             {busy === 'preview' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} preview
                         </button>
-                        <button type="button" onClick={() => run('apply')} disabled={!!busy || (!dirty && !!info)} className="btn-primary flex-1 py-2 text-sm">
+                        <button type="button" onClick={() => run('apply')} disabled={!!busy || rendering || (!dirty && !!info)} title={rendering ? 'an audio render is already running for this clip' : undefined} className="btn-primary flex-1 py-2 text-sm">
                             {busy === 'apply' ? <Loader2 size={14} className="animate-spin" /> : null}
                             {chain.length ? (dirty ? 'apply to clip' : 'applied') : (info?.chain?.length ? 'remove audio fix' : 'apply to clip')}
                         </button>
                     </div>
+                    {rendering && <p className="text-xs text-muted">rendering in background</p>}
                     <p className="readout normal-case text-[11px]">
                         Applied as the clip&apos;s last layer: hooks, captions and trims keep it.
                     </p>

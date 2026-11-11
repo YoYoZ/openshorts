@@ -9,6 +9,14 @@ export const getToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || '';
 export const setToken = (t) => localStorage.setItem(AUTH_TOKEN_KEY, t);
 export const clearToken = () => localStorage.removeItem(AUTH_TOKEN_KEY);
 
+const ENGINE_RETRY_MS = 60_000;
+let engineStarting = false;
+function setEngineStarting(value) {
+  if (engineStarting === value) return;
+  engineStarting = value;
+  window.dispatchEvent(new CustomEvent('os:engine-starting', { detail: value }));
+}
+
 export class QuotaError extends Error {
   constructor(detail) {
     super('quota_exceeded');
@@ -38,7 +46,22 @@ export async function apiFetch(path, options = {}) {
   const token = getToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
-  const res = await fetch(getApiUrl(path), { ...options, headers });
+  const started = Date.now();
+  let res;
+  while (true) {
+    try {
+      res = await fetch(getApiUrl(path), { ...options, headers });
+      if (![502, 503, 504].includes(res.status) || Date.now() - started >= ENGINE_RETRY_MS) break;
+    } catch (err) {
+      if (Date.now() - started >= ENGINE_RETRY_MS) {
+        setEngineStarting(false);
+        throw err;
+      }
+    }
+    setEngineStarting(true);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, 250 * (1 + Math.floor((Date.now() - started) / 3000)))));
+  }
+  setEngineStarting(false);
 
   if (res.status === 402) {
     let detail = {};

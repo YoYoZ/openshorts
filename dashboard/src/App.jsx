@@ -301,6 +301,12 @@ const pollJob = async (jobId, raw = false) => {
 };
 
 function App() {
+  const [engineStarting, setEngineStarting] = useState(false);
+  useEffect(() => {
+    const update = (event) => setEngineStarting(!!event.detail);
+    window.addEventListener('os:engine-starting', update);
+    return () => window.removeEventListener('os:engine-starting', update);
+  }, []);
   // Cloud auth/billing session (inert when billing is disabled).
   const { billingEnabled, isManaged, isSignedIn, me, plan, refreshMe, jobRetentionSeconds, localLlm } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
@@ -1810,6 +1816,7 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            {engineStarting && <span className="rounded-full border border-brass/30 bg-brass/10 px-2.5 py-1 text-[11px] text-brass">starting engine…</span>}
             {userProfiles.length > 0 && (
               <UserProfileSelector
                 profiles={userProfiles}

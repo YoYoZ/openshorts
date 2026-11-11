@@ -45,6 +45,9 @@ const StepNo = ({ n, done }) => (
 );
 
 export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, onBulkHook, bulkHookProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null, focus = false, command = null, onOpenFocus = null, selected = false, onSelect = null, onClipPatch = null, checks = null, onChecks = null, stacked = false, hideSteps = false, onSchedule = null, panel = null, onPanelClose = null, onOpenTab = null }) {
+    const alive = useRef(true);
+    const renderLocks = useRef({ subtitle: false, hook: false });
+    useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -338,6 +341,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     const [isEditing, setIsEditing] = useState(false);
     const [isSubtitling, setIsSubtitling] = useState(false);
     const [isHooking, setIsHooking] = useState(false);
+    const [backgroundRender, setBackgroundRender] = useState({ subtitle: false, hook: false });
     const [isTranslating, setIsTranslating] = useState(false);
     const [showHookModal, setShowHookModal] = useState(false);
     const [showChecks, setShowChecks] = useState(false);
@@ -552,6 +556,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
     };
 
     const handleSubtitle = async (options) => {
+        if (renderLocks.current.subtitle) return;
+        renderLocks.current.subtitle = true;
         setIsSubtitling(true);
         setEditError(null);
         try {
@@ -575,7 +581,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 return;
             }
 
-            // Fallback: legacy FFmpeg
+            // Fallback: legacy FFmpeg, rendered server-side in the background
+            setBackgroundRender((s) => ({ ...s, subtitle: true }));
+            setIsSubtitling(false);
             const res = await apiFetch('/api/subtitle', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -636,14 +644,17 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 closeSubtitleEditor();
             }
         } catch (e) {
-            setEditError(e.message);
-            setTimeout(() => setEditError(null), 5000);
+            if (alive.current) { setEditError(e.message); setTimeout(() => alive.current && setEditError(null), 5000); }
         } finally {
-            setIsSubtitling(false);
+            renderLocks.current.subtitle = false;
+            if (alive.current) setBackgroundRender((s) => ({ ...s, subtitle: false }));
+            if (alive.current) setIsSubtitling(false);
         }
     };
 
     const handleHook = async (hookData) => {
+        if (renderLocks.current.hook) return;
+        renderLocks.current.hook = true;
         setIsHooking(true);
         setEditError(null);
         try {
@@ -669,6 +680,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 ? { text: hookData, position: 'top', size: 'M' }
                 : hookData;
 
+            setBackgroundRender((s) => ({ ...s, hook: true }));
+            setIsHooking(false);
             const res = await apiFetch('/api/hook', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -696,10 +709,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 closeHookEditor();
             }
         } catch (e) {
-            setEditError(e.message);
-            setTimeout(() => setEditError(null), 5000);
+            if (alive.current) { setEditError(e.message); setTimeout(() => alive.current && setEditError(null), 5000); }
         } finally {
-            setIsHooking(false);
+            renderLocks.current.hook = false;
+            if (alive.current) setBackgroundRender((s) => ({ ...s, hook: false }));
+            if (alive.current) setIsHooking(false);
         }
     };
 
@@ -924,6 +938,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
     return (
         <div className={`card overflow-hidden flex flex-col ${stacked ? '' : 'md:flex-row'} group transition-colors animate-fade ${focus ? 'md:h-full' : stacked ? '' : 'md:min-h-[420px]'} ${done ? 'border-ok/60 bg-ok/[0.04]' : selected ? 'border-brass' : 'hover:border-rule2'}`}>
+            {(backgroundRender.subtitle || backgroundRender.hook) && <div className="px-3 py-1 text-xs text-muted">rendering in background</div>}
             {/* Left: Video Preview — 9:16 column matching the fixed card height */}
             {/* A full-width 9:16 preview on a phone is ~640px tall on its own,
                 which pushed the title, captions and every action off-screen.
@@ -1457,6 +1472,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 bulkCount={clipCount}
                 bulkProgress={bulkProgress}
                 isProcessing={isSubtitling || (bulkProgress?.running ?? false)}
+                applyPending={backgroundRender.subtitle}
                 videoUrl={originalVideoUrl}
                 jobId={jobId}
                 clipIndex={index}
@@ -1485,6 +1501,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 bulkCount={clipCount}
                 bulkProgress={bulkHookProgress}
                 isProcessing={isHooking}
+                applyPending={backgroundRender.hook}
                 videoUrl={originalVideoUrl}
                 initialText={clip.viral_hook_text}
                 durationInSeconds={(Number(clip.end) || 0) - (Number(clip.start) || 0) || 30}

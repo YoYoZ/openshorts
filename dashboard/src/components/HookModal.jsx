@@ -66,7 +66,7 @@ function loadHookPrefs() {
     try { return JSON.parse(localStorage.getItem('os_hook_prefs')) || {}; } catch { return {}; }
 }
 
-export default function HookModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
+export default function HookModal({ inline = false, isOpen, onClose, onGenerate, onApplyAll, bulkCount = 0, bulkProgress, onRemove, isProcessing, applyPending = false, videoUrl, initialText, durationInSeconds, existingSubtitles, hasCaptions, serverRender, burnedHook }) {
     const prefs = loadHookPrefs();
     const [text, setText] = useState(initialText || 'POV: You are using the viral hook feature');
     // Stored as `pos`, not `position`: before 'auto' existed every save wrote
@@ -339,7 +339,8 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                     remotion: hookConfig,
                                 });
                             }}
-                            disabled={isProcessing || !text.trim()}
+                            disabled={isProcessing || applyPending || !text.trim()}
+                            title={applyPending ? 'a hook render is already running for this clip' : undefined}
                             className="btn-primary flex-1"
                         >
                             {isProcessing && <Loader2 size={16} className="animate-spin text-brassink" />}
