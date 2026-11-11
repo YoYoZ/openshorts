@@ -976,6 +976,7 @@ function App() {
             clip_index: i,
             text,
             position: options.position,
+            y: options.y,
             size: scale ? 'M' : (options.size || 'M'),
             scale,
             style: options.style || 'pill',

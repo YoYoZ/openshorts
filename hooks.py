@@ -505,7 +505,13 @@ def _auto_place(video_path, text, target_box_width, hook_filename, font_scale, s
             "y": round(y, 3), "scale": rel}
 
 
+def custom_overlay_y(y, video_h, box_h):
+    """Clamp a fractional custom hook position to the visible video frame."""
+    return max(0, min(int(float(y) * video_h), max(0, video_h - box_h)))
+
+
 def add_hook_to_video(video_path, text, output_path, position="top", font_scale=1.0, duration=None, style="pill",
+                      y=None,
                       also=None, font=None, layout_ranges=None, has_captions=True):
     """
     Overlays text hook onto video.
@@ -566,7 +572,9 @@ def add_hook_to_video(video_path, text, output_path, position="top", font_scale=
         # 3. Calculate Overlay Position
         overlay_x = (video_width - box_w) // 2
         
-        if placed:
+        if y is not None:
+            overlay_y = custom_overlay_y(y, video_height, box_h)
+        elif placed:
             overlay_y = placed["y_px"]
         elif position == "center":
             overlay_y = (video_height - box_h) // 2

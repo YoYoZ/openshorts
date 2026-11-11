@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.background import BackgroundTask
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
 import recut
 import layout_ranges
@@ -1144,7 +1144,7 @@ def _rebuild_layers(job_id, clip_index, base_path, captions=True):
         try:
             _, captioned = _hook_with_captions(
                 job_id, clip_index, base_path, hooked, captions,
-                text=text, position=hook.get('position') or "auto",
+                text=text, position=hook.get('position') or "auto", y=hook.get('y'),
                 font_scale=float(hook.get('scale') or 1.0), duration=hook.get('duration_seconds'),
                 style=hook.get('style') or "pill", font=hook.get('font'),
                 layout_ranges=clip.get('layout_ranges'),
@@ -6896,6 +6896,7 @@ class HookRequest(BaseModel):
     # auto (off the faces and the captions, hooks/hook_placement), or an
     # explicit top / center / bottom, which is drawn exactly there.
     position: Optional[str] = "auto"
+    y: Optional[float] = Field(None, ge=0, le=1)  # top of the hook box as a fraction of frame height
     size: Optional[str] = "M" # S, M, L (legacy presets)
     # Exact size multiplier from the editor's slider; wins over ``size``.
     scale: Optional[float] = None
@@ -6984,7 +6985,7 @@ async def add_hook(req: HookRequest, request: Request):
             def run_hook():
                 return _hook_with_captions(
                     req.job_id, req.clip_index, input_path, output_path, had_captions,
-                    text=req.text, position=req.position or "auto",
+                    text=req.text, position="custom" if req.y is not None else (req.position or "auto"), y=req.y,
                     font_scale=font_scale, duration=req.duration_seconds, style=req.style,
                     font=req.font, layout_ranges=clip_data.get('layout_ranges'),
                     has_captions=had_captions)
@@ -7018,7 +7019,8 @@ async def add_hook(req: HookRequest, request: Request):
         clip_data.pop('auto_hook', None)
     else:
         clip_data['auto_hook'] = {
-            "text": req.text, "style": req.style, "font": req.font, "position": req.position,
+            "text": req.text, "style": req.style, "font": req.font,
+            "position": "custom" if req.y is not None else req.position, "y": req.y,
             "duration_seconds": req.duration_seconds, "scale": font_scale,
         }
         if isinstance(hook_result, dict):   # frame fractions, for the checklist

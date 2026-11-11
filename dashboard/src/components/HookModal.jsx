@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 // The Remotion player is the heaviest part of the bundle: load it when this
 // editor first opens, not with the app.
@@ -52,6 +52,7 @@ const POSITION_OPTIONS = [
     { value: 'top', label: 'top' },
     { value: 'center', label: 'center' },
     { value: 'bottom', label: 'bottom' },
+    { value: 'custom', label: 'custom' },
 ];
 
 const SIZE_OPTIONS = [
@@ -72,6 +73,14 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
     // Stored as `pos`, not `position`: before 'auto' existed every save wrote
     // 'top' whether or not the user ever touched the control.
     const [position, setPosition] = useState(prefs.pos || 'auto');
+    const [y, setY] = useState(typeof prefs.y === 'number' ? prefs.y : 0.3);
+    const previewRef = useRef(null);
+    const dragY = (event) => {
+        const bounds = previewRef.current?.getBoundingClientRect();
+        if (!bounds) return;
+        const raw = Math.max(0, Math.min(0.9, (event.clientY - bounds.top) / bounds.height - 0.05));
+        setY(event.altKey ? raw : Math.max(0.15, Math.min(0.63, raw)));
+    };
     // Size multiplier (1 = the style's default); old prefs stored S/M/L.
     const LEGACY_SIZES = { S: 0.8, M: 1.0, L: 1.3 };
     const [size, setSize] = useState(
@@ -89,6 +98,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
     const hookConfig = {
         text: text || 'Enter your text...',
         position,
+        y,
         size,
         style,
         font: effectiveFont,
@@ -119,7 +129,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                 timing, actions, all at full height so nothing scrolls. */}
             <div className={`flex flex-col md:flex-row gap-6 ${inline ? 'md:h-full md:min-h-0' : ''}`}>
                 {/* Left: Preview */}
-                <div className={`w-full max-w-[300px] mx-auto md:mx-0 shrink-0 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:w-auto md:max-w-[38%]' : 'md:w-[300px] self-start'}`}>
+                <div ref={previewRef} className={`w-full max-w-[300px] mx-auto md:mx-0 shrink-0 flex flex-col items-center justify-center bg-black rounded-card border border-rule overflow-hidden relative aspect-[9/16] ${inline ? 'md:h-full md:min-h-0 md:w-auto md:max-w-[38%]' : 'md:w-[300px] self-start'}`}>
                     {useRemotionPreview ? (
                         <RemotionPreview
                             videoUrl={videoUrl}
@@ -149,6 +159,16 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                             </div>
                         </>
                     )}
+                    {position === 'custom' && <>
+                        <div className="absolute inset-x-0 top-0 h-[15%] bg-red-500/20 pointer-events-none"><span className="text-[9px] text-white/80">YouTube UI</span></div>
+                        <div className="absolute inset-x-0 bottom-0 h-[25%] bg-red-500/20 pointer-events-none"><span className="text-[9px] text-white/80">YouTube UI</span></div>
+                        <div className="absolute right-0 top-0 h-[75%] w-[12%] bg-red-500/20 pointer-events-none" />
+                        <div className="absolute left-0 right-[12%] h-[12%] border border-dashed border-white/80 bg-black/10 cursor-grab active:cursor-grabbing touch-none"
+                            style={{ top: `${y * 100}%` }}
+                            onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); dragY(e); }}
+                            onPointerMove={(e) => { if (e.buttons) dragY(e); }}
+                            title="drag hook; hold alt to enter the YouTube UI zones" />
+                    </>}
                 </div>
 
                 {/* Middle: what the hook says and how it looks */}
@@ -230,7 +250,7 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                             <SegmentedControl
                                 options={POSITION_OPTIONS}
                                 value={position}
-                                onChange={setPosition}
+                                onChange={(next) => { setPosition(next); if (next !== 'custom') setY(0.3); }}
                                 size="sm"
                             />
                             {position === 'auto' && (
@@ -330,11 +350,11 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                             onClick={() => {
                                 try {
                                     localStorage.setItem('os_hook_prefs', JSON.stringify({
-                                        style, font, pos: position, size, entranceAnimation,
+                                        style, font, pos: position, y, size, entranceAnimation,
                                     }));
                                 } catch { /* ignore */ }
                                 onGenerate({
-                                    text, position, size, style, font: effectiveFont,
+                                    text, position, y: position === 'custom' ? y : undefined, size, style, font: effectiveFont,
                                     // Remotion data
                                     remotion: hookConfig,
                                 });
@@ -357,10 +377,10 @@ export default function HookModal({ inline = false, isOpen, onClose, onGenerate,
                                     onClick={() => {
                                         try {
                                             localStorage.setItem('os_hook_prefs', JSON.stringify({
-                                                style, font, pos: position, size, entranceAnimation,
+                                                style, font, pos: position, y, size, entranceAnimation,
                                             }));
                                         } catch { /* ignore */ }
-                                        onApplyAll({ position, size, style, font: effectiveFont, remotion: hookConfig });
+                                        onApplyAll({ position, y: position === 'custom' ? y : undefined, size, style, font: effectiveFont, remotion: hookConfig });
                                     }}
                                     disabled={running || isProcessing}
                                     className="btn-ghost w-full"
