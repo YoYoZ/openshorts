@@ -852,12 +852,26 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     print("📥 Downloading video from YouTube...")
     step_start_time = time.time()
 
-    cookies_path = '/app/cookies.txt'
+    # /app exists only in the server image; anywhere else (the desktop app,
+    # a dev checkout) the write failed and every download ran without the
+    # user's cookies. Use the image's path when it is there, else a private
+    # temp file (mkstemp: readable by this user only, removed at exit).
+    cookies_path = '/app/cookies.txt' if os.path.isdir('/app') else None
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
-        print("🍪 Found YOUTUBE_COOKIES env var, creating cookies file inside container...")
+        print("🍪 Found YOUTUBE_COOKIES, writing the cookies file for yt-dlp...")
         try:
-            with open(cookies_path, 'w') as f:
+            if cookies_path is None:
+                import atexit
+                import tempfile
+                fd, cookies_path = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
+                os.close(fd)
+                atexit.register(lambda p=cookies_path: os.path.exists(p) and os.remove(p))
+            # yt-dlp only reads the Netscape format, which starts with this
+            # header; a pasted export without it is rejected as "invalid".
+            if not cookies_env.lstrip().startswith(("# Netscape HTTP Cookie File", "# HTTP Cookie File")):
+                cookies_env = "# Netscape HTTP Cookie File\n" + cookies_env
+            with open(cookies_path, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(cookies_env)
             if os.path.exists(cookies_path):
                  # Never print file CONTENT here: with a headerless cookies
