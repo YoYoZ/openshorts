@@ -288,6 +288,8 @@ def apply_crop_overrides(xs, strategies, scene_boundaries, overrides,
             def point(half):
                 if isinstance(half, dict):
                     fx, fy = float(half['x']), float(half.get('y', 0.5))
+                    if half.get('w'):
+                        return (fx * orig_w, fy * orig_h, float(half['w']) * orig_w)
                 else:
                     fx, fy = float(half), 0.5
                 return (fx * orig_w, fy * orig_h)
@@ -461,7 +463,7 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
     # crop_overrides["cuts"] (seconds into this cut, between zones) so the
     # per-zone overrides keep their scene-index keys.
     user_cuts = (crop_overrides or {}).get("cuts") if isinstance(crop_overrides, dict) else None
-    if user_cuts:
+    if isinstance(user_cuts, list):
         scenes = user_zones(input_video, user_cuts, fps)
         print(f"   ✂️ {len(scenes)} zone(s) cut by hand")
 

@@ -157,6 +157,15 @@ def split_geometry(orig_w, orig_h, out_w, out_h, centre):
 
     crop_h = int(round(orig_h * max(0.3, min(SPLIT_TIGHTNESS, 1.0))))
     crop_w = int(round(crop_h * aspect))
+    # A third value is a crop width the user drew (source pixels): the box
+    # keeps the half's aspect and is scaled up to fill it, so a smaller box
+    # is a closer shot.
+    if len(centre) > 2 and centre[2]:
+        crop_w = max(64, int(round(float(centre[2]))))
+        crop_h = int(round(crop_w / aspect))
+        if crop_h > orig_h:
+            crop_h = orig_h
+            crop_w = int(round(crop_h * aspect))
     if crop_w > orig_w:
         crop_w = orig_w
         crop_h = int(round(crop_w / aspect))

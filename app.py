@@ -6017,7 +6017,7 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
     # since a re-render rebuilds from source using ONLY what it is sent, the
     # next save would silently drop every earlier adjustment.
     saved_overrides = dict(clip.get('crop_overrides') or {})
-    saved_cuts = saved_overrides.pop('cuts', None) or []
+    saved_cuts = saved_overrides.pop('cuts', None)   # None = never cut by hand; [] = one zone
     # Zones: the cuts asked for (the editor re-splitting), else the ones saved
     # with the clip, else the detected scenes.
     want_cuts = None
@@ -6026,7 +6026,7 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
             want_cuts = sorted({round(float(c), 3) for c in cuts.split(',') if c.strip()})
         except ValueError:
             raise HTTPException(status_code=400, detail="cuts must be seconds, comma separated")
-    elif saved_cuts:
+    elif saved_cuts is not None:
         want_cuts = [float(c) for c in saved_cuts]
     # Suggested zone edges: where sentences end (clip seconds), for "split by
     # sentences" in the editor.
@@ -6062,25 +6062,54 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
         # for the temp cut (no collision between overlapping requests).
         # temp_ prefix keeps these editor-only artifacts out of the self-host
         # S3 backup (it skips temp_*); stable names still avoid accumulation.
+        # The uncropped cut, its detected scenes and the light preview are
+        # kept per clip and per cut signature: re-opening the editor (or
+        # re-zoning) must not cut, detect and encode the clip all over again.
         token = str(clip_index)
-        work_token = f"{clip_index}_{uuid.uuid4().hex[:8]}"
-        preview_name = f"temp_preview_{clip_index}.mp4"
+        sig = hashlib.sha1(json.dumps(
+            [source_path, os.path.getmtime(source_path), segments], default=str
+        ).encode()).hexdigest()[:10]
+        work_path = os.path.join(output_dir, f"temp_scenework_{clip_index}_{sig}.mp4")
+        scenes_cache = os.path.join(output_dir, f"temp_scenes_{clip_index}_{sig}.json")
+        preview_name = f"temp_preview_{clip_index}_{sig}.mp4"
         preview_path = os.path.join(output_dir, preview_name)
-        work_path = _clip_scene_workfile(source_path, segments, output_dir, work_token)
+        for pattern in (f"temp_scenework_{clip_index}_*.mp4", f"temp_scenes_{clip_index}_*.json",
+                        f"temp_preview_{clip_index}_*.mp4", f"temp_preview_{clip_index}.mp4"):
+            for old in glob.glob(os.path.join(output_dir, pattern)):
+                if sig not in os.path.basename(old):
+                    try:
+                        os.remove(old)
+                    except OSError:
+                        pass
+        if not os.path.exists(work_path):
+            part = _clip_scene_workfile(source_path, segments, output_dir,
+                                        f"{clip_index}_{uuid.uuid4().hex[:8]}")
+            os.replace(part, work_path)
         try:
-            scenes, fps = m.detect_scenes(work_path)
-            fps = float(fps) or 30.0
-            if want_cuts:
+            if os.path.exists(scenes_cache):
+                with open(scenes_cache, encoding='utf-8') as fh:
+                    cached = json.load(fh)
+                fps = float(cached['fps'])
+                auto_bounds = [tuple(b) for b in cached['bounds']]
+            else:
+                scenes, fps = m.detect_scenes(work_path)
+                fps = float(fps) or 30.0
+                auto_bounds = [(s.get_frames(), e.get_frames()) for s, e in scenes]
+                with open(scenes_cache, 'w', encoding='utf-8') as fh:
+                    json.dump({'fps': fps, 'bounds': auto_bounds}, fh)
+            bounds = auto_bounds
+            if want_cuts is not None:
                 import reframe_v2
-                scenes = reframe_v2.user_zones(work_path, want_cuts, fps)
+                bounds = [(s.get_frames(), e.get_frames())
+                          for s, e in reframe_v2.user_zones(work_path, want_cuts, fps)]
             orig_w, orig_h = m.get_video_resolution(work_path)
 
             cap = cv2.VideoCapture(work_path)
-            if not scenes:
-                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-                bounds = [(0, total)]
-            else:
-                bounds = [(s.get_frames(), e.get_frames()) for s, e in scenes]
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+            if not bounds:
+                bounds = [(0, total_frames)]
+            auto_cuts = [round(s / fps, 3) for s, _e in auto_bounds[1:]]
+            duration = round(total_frames / fps, 3)
 
             out = []
             for idx, (start_f, end_f) in enumerate(bounds):
@@ -6121,13 +6150,13 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
                     "suggested_center_y": round(suggested_y, 4),
                 })
             cap.release()
-            return orig_w, orig_h, out, preview_name
+            return orig_w, orig_h, out, preview_name, auto_cuts, duration
         finally:
             # The uncropped cut becomes a light preview instead of being
             # discarded: judging the framing means knowing who is talking, and
             # the delivered 9:16 file no longer shows the rest of the room.
             try:
-                if os.path.exists(work_path):
+                if os.path.exists(work_path) and not os.path.exists(preview_path):
                     subprocess.run(
                         ["ffmpeg", "-y", "-loglevel", "error", "-i", work_path,
                          "-vf", "scale=640:-2", "-c:v", "libx264", "-preset",
@@ -6138,9 +6167,6 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
                          preview_path], check=True, timeout=600)
             except Exception as exc:
                 print(f"Scene preview failed: {exc}")
-            finally:
-                if os.path.exists(work_path):
-                    os.remove(work_path)
 
     # Serialized per job: two overlapping opens would run two ffmpeg writers
     # on the same stable preview/thumbnail names and serve a torn file.
@@ -6148,7 +6174,7 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
     async with lock:
         try:
             loop = asyncio.get_event_loop()
-            orig_w, orig_h, scenes_out, preview_name = await loop.run_in_executor(None, build)
+            orig_w, orig_h, scenes_out, preview_name, auto_cuts, duration = await loop.run_in_executor(None, build)
         except Exception as e:
             print(f"Scene listing error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -6170,6 +6196,8 @@ async def get_clip_scenes(job_id: str, clip_index: int, request: Request, cuts: 
         print(f"Split box unavailable: {exc}")
     return {
         "split_box": split_box,
+        "auto_cuts": auto_cuts,
+        "duration": duration,
         "saved_cuts": saved_cuts,
         "zone_cuts": want_cuts or [],
         "sentence_cuts": sentence_cuts,
@@ -6213,8 +6241,7 @@ async def reframe_clip(req: ReframeRequest, request: Request):
                 cut_list = sorted({round(float(c), 3) for c in (value or []) if float(c) > 0})
             except (TypeError, ValueError):
                 continue
-            if cut_list:
-                overrides['cuts'] = cut_list[:200]
+            overrides['cuts'] = cut_list[:200]
             continue
         try:
             idx = int(key)
@@ -6228,14 +6255,20 @@ async def reframe_clip(req: ReframeRequest, request: Request):
                 if mode == 'zoom' and value.get('width') is not None:
                     entry['width'] = min(0.95, max(0.3, float(value['width'])))
                 if mode == 'split':
-                    entry['top'] = {'x': _fraction(value['top']['x']), 'y': _fraction(value['top'].get('y', 0.5))}
-                    entry['bottom'] = {'x': _fraction(value['bottom']['x']), 'y': _fraction(value['bottom'].get('y', 0.5))}
+                    for half in ('top', 'bottom'):
+                        h = value[half]
+                        entry[half] = {'x': _fraction(h['x']), 'y': _fraction(h.get('y', 0.5))}
+                        if h.get('w'):
+                            entry[half]['w'] = min(1.0, max(0.1, float(h['w'])))
                 overrides[idx] = entry
                 continue
             if isinstance(value, dict):
                 def _half(h):
                     if isinstance(h, dict):
-                        return {"x": _fraction(h["x"]), "y": _fraction(h.get("y", 0.5))}
+                        out = {"x": _fraction(h["x"]), "y": _fraction(h.get("y", 0.5))}
+                        if h.get("w"):
+                            out["w"] = min(1.0, max(0.1, float(h["w"])))
+                        return out
                     return {"x": _fraction(h), "y": 0.5}
                 overrides[idx] = {"top": _half(value["top"]),
                                   "bottom": _half(value["bottom"])}
@@ -6361,7 +6394,7 @@ async def _reframe_locked(req: ReframeRequest, request: Request, job, overrides)
             "recipe": new_recipe,
             "start": min(s['start'] for s in segments),
             "end": max(s['end'] for s in segments),
-            "framed_scenes": sorted(overrides),
+            "framed_scenes": sorted(k for k in overrides if isinstance(k, int)),
         }
     except Exception as e:
         if reservation_id:
