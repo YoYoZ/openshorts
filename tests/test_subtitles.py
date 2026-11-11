@@ -209,8 +209,12 @@ class TestGenerateAss:
         assert generate_ass(self._transcript(words), 0, 10, str(out),
                             effect="glow", highlight_color="#00FF88") is True
         content = out.read_text(encoding="utf-8-sig")
-        assert "\\blur4" in content
-        assert "\\3c&H88FF00&" in content  # glow outline in highlight color
+        # Two layers: a blurred, translucent halo in the highlight colour
+        # under the line, and the line itself with the word coloured and its
+        # normal outline (as the editor preview draws it).
+        assert "\\3c&H88FF00&" in content and "\\blur2.5" in content
+        assert "Dialogue: 0," in content and "Dialogue: 1," in content
+        assert "{\\c&H88FF00&}" in content
 
     def test_pop_effect_animates_scale(self, tmp_path):
         from subtitles import generate_ass
