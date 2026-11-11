@@ -639,10 +639,19 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
 
     # Inline override tags for the active word; {\r} after it resets to the
     # (dimmed) style so the rest of the block stays untouched.
+    halo_prefix = None
     if effect == "glow":
-        glow_bord = max(3, int(outline_width) + 2)
-        active_prefix = (f"{{\\c&HFFFFFF&\\3c{highlight_inline}"
-                         f"\\bord{glow_bord}\\blur4}}")
+        # Drawn like the editor preview (a coloured word with its normal
+        # outline, plus a soft halo around the letters): the old single-layer
+        # version turned the outline itself into a 4-unit blurred band in the
+        # highlight colour, which at 1080x1920 reads as a solid slab behind
+        # the word. The halo is a second, lower layer (see the events below):
+        # the same line with every glyph transparent except the active word's
+        # outline, wide, faint and blurred.
+        active_prefix = f"{{\\c{highlight_inline}}}"
+        halo = max(2.0, outline_width * 0.75 + 1.5)
+        halo_prefix = (f"{{\\1a&HFF&\\3a&H50&\\3c{highlight_inline}"
+                       f"\\bord{halo:g}\\blur{halo + 1:g}}}")
     elif effect == "box":
         box_bord = max(4, int(outline_width) + 3)
         active_prefix = (f"{{\\c&HFFFFFF&\\3c{highlight_inline}"
@@ -734,8 +743,22 @@ def generate_ass(transcript, clip_start, clip_end, output_path,
                 else:
                     parts.append(text)
 
+            if halo_prefix:
+                # Same words, same positions, everything invisible but the
+                # active word's halo; under the normal line (layer 0 vs 1).
+                hidden = "{\\alpha&HFF&}"
+                halo_parts = []
+                for j, other in enumerate(block):
+                    text = _escape_ass_text(other['word'])
+                    if uppercase:
+                        text = text.upper()
+                    halo_parts.append(f"{halo_prefix}{text}{hidden}" if j == i else text)
+                events.append(
+                    f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
+                    f"{seam_prefix(ev_start)}{'{' + fit + '}' if fit else ''}{hidden}{' '.join(halo_parts)}"
+                )
             events.append(
-                f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
+                f"Dialogue: {1 if halo_prefix else 0},{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
                 f"{seam_prefix(ev_start)}{'{' + fit + '}' if fit else ''}{' '.join(parts)}"
             )
 
