@@ -238,19 +238,53 @@ def _call(base: str, key: str, model: str, prompt: str, schema: Type[BaseModel],
         else:
             raise RuntimeError(f"LLM server rejected every response_format variant: {last_rejection}")
 
-    choices = data.get("choices") or []
-    text = ""
-    if choices:
-        msg = choices[0].get("message") or {}
-        text = msg.get("content") or ""
-        if isinstance(text, list):  # some servers return content parts
-            text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
-    parsed = gemini_worker._parse_json_response_text(text)
-    # Validate against the same schema Gemini enforces server-side, so a model
-    # that drops a field fails here with a readable error (and, in a chain,
-    # hands over to the next model).
-    validated = schema.model_validate(parsed).model_dump()
-    return validated, data.get("usage") or {}
+    def answer_text(d):
+        choices = d.get("choices") or []
+        if not choices:
+            return ""
+        t = (choices[0].get("message") or {}).get("content") or ""
+        if isinstance(t, list):  # some servers return content parts
+            t = "".join(p.get("text", "") for p in t if isinstance(p, dict))
+        return t
+
+    def parse(t):
+        # Validate against the same schema Gemini enforces server-side, so a
+        # model that drops a field fails here with a readable error.
+        return schema.model_validate(gemini_worker._parse_json_response_text(t)).model_dump()
+
+    text = answer_text(data)
+    usage = dict(data.get("usage") or {})
+    try:
+        return parse(text), usage
+    except Exception as first_error:
+        # Endpoints that do not enforce response_format (Anthropic's) now and
+        # then return JSON with one stray quote in a long answer. Show the
+        # model its own answer and the parse error and ask once for the fixed
+        # object: far cheaper than re-running the whole task on the next model,
+        # and with a one-model chain the only way the task still succeeds.
+        print(f"   ↩️ {model}: invalid JSON ({str(first_error)[:120]}); asking it to correct it", flush=True)
+        repair = messages + [
+            {"role": "assistant", "content": text[:60000]},
+            {"role": "user", "content": (
+                "That reply is not valid JSON for the schema: " + str(first_error)[:500]
+                + ". Reply again with only the corrected JSON object. Escape any double quote "
+                  "inside a string as \\\", and change nothing else.")},
+        ]
+        body = {"model": model, "messages": repair, "stream": False}
+        if "api.anthropic.com" not in url:
+            body["temperature"] = 0.0
+        with _client() as client:
+            resp = client.post(url, json=body, headers=headers)
+        if resp.status_code >= 400:
+            raise first_error
+        data2 = resp.json()
+        for k, v in (data2.get("usage") or {}).items():
+            if isinstance(v, (int, float)):
+                usage[k] = usage.get(k, 0) + v
+        try:
+            return parse(answer_text(data2)), usage
+        except Exception:
+            raise first_error
 
 
 def _cost(usage: dict, model: str, price_in: float, price_out: float, provider_name: str) -> dict:
